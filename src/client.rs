@@ -31,7 +31,7 @@ use crate::session::{Session, Stream};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -48,15 +48,31 @@ const SCALE_HEADROOM: u32 = 48;
 
 /// Deterministic exponential backoff (unit-tested). Jitter is applied by the
 /// manager loop so tests stay exact.
-pub fn next_backoff(current: Duration, lived: Option<Duration>, min: Duration, max: Duration, reset_after: Duration) -> Duration {
-    if let Some(l) = lived { if l >= reset_after { return min; } }
-    if current.is_zero() { min } else { (current * 2).min(max) }
+pub fn next_backoff(
+    current: Duration,
+    lived: Option<Duration>,
+    min: Duration,
+    max: Duration,
+    reset_after: Duration,
+) -> Duration {
+    if let Some(l) = lived {
+        if l >= reset_after {
+            return min;
+        }
+    }
+    if current.is_zero() {
+        min
+    } else {
+        (current * 2).min(max)
+    }
 }
 
 /// Jittered backoff: ±15% randomization prevents every client from
 /// reconnecting in lockstep after a server restart (thundering herd).
 fn jittered(d: Duration) -> Duration {
-    if d.is_zero() { return d; }
+    if d.is_zero() {
+        return d;
+    }
     let pct = (rand::random::<f64>() - 0.5).clamp(-0.15, 0.15);
     let j = (d.as_secs_f64() * (1.0 + pct)).max(0.0);
     Duration::from_secs_f64(j)
@@ -83,7 +99,9 @@ pub struct TunnelConfig {
 }
 impl Default for TunnelConfig {
     fn default() -> Self {
-        Self { server: "127.0.0.1:6123".parse().unwrap(), psk: [0u8; 32],
+        Self {
+            server: "127.0.0.1:6123".parse().unwrap(),
+            psk: [0u8; 32],
             session: Config::default(),
             min_backoff: Duration::from_secs(1),
             // 10 s (not 30 s): when a downed server comes back, the client
@@ -92,7 +110,9 @@ impl Default for TunnelConfig {
             // every 10 s while it is down.
             max_backoff: Duration::from_secs(10),
             backoff_reset_after: Duration::from_secs(30),
-            obfs: None, max_tunnels: 4 }
+            obfs: None,
+            max_tunnels: 4,
+        }
     }
 }
 
@@ -138,8 +158,10 @@ impl TunnelManager {
             _stop: stop_tx,
         });
         let m = Arc::clone(&mgr);
-        thread::Builder::new().name("rl-tunnels".into())
-            .spawn(move || maintenance_loop(m, stop_rx)).expect("spawn tunnel manager");
+        thread::Builder::new()
+            .name("rl-tunnels".into())
+            .spawn(move || maintenance_loop(m, stop_rx))
+            .expect("spawn tunnel manager");
         mgr
     }
 
@@ -157,10 +179,15 @@ impl TunnelManager {
                     // dialing another one; ride it out within the budget.
                     Err(e @ Error::ResourceLimit(_)) => {
                         if !warned {
-                            log::warn!("open_stream: {e} — waiting for scale-out (retrying ≤{:?})", wait);
+                            log::warn!(
+                                "open_stream: {e} — waiting for scale-out (retrying ≤{:?})",
+                                wait
+                            );
                             warned = true;
                         }
-                        if Instant::now() >= deadline { return Err(e); }
+                        if Instant::now() >= deadline {
+                            return Err(e);
+                        }
                         thread::sleep(Duration::from_millis(25));
                     }
                     Err(e) => return Err(e),
@@ -189,7 +216,9 @@ impl TunnelManager {
         let state = self.state.lock().unwrap();
         let mut best: Option<(Arc<Session>, u32)> = None;
         for s in state.tunnels.iter() {
-            if !s.is_alive() { continue; }
+            if !s.is_alive() {
+                continue;
+            }
             let load = s.stats().streams_open;
             best = match best {
                 None => Some((Arc::clone(s), load)),
@@ -198,7 +227,9 @@ impl TunnelManager {
                     // round-robin tie-break
                     if self.rr.fetch_add(1, Ordering::Relaxed) & 1 == 1 {
                         Some((Arc::clone(s), load))
-                    } else { best }
+                    } else {
+                        best
+                    }
                 }
                 _ => best,
             };
@@ -236,27 +267,44 @@ fn maintenance_loop(mgr: Arc<TunnelManager>, stop_rx: mpsc::Receiver<()>) {
         // ---- 1) Reap dead tunnels; schedule the reconnect. ----
         {
             let state = &mut *mgr.state.lock().unwrap();
-            let now_dead: Vec<Arc<Session>> = state.tunnels.iter()
-                .filter(|s| !s.is_alive()).cloned().collect();
+            let now_dead: Vec<Arc<Session>> = state
+                .tunnels
+                .iter()
+                .filter(|s| !s.is_alive())
+                .cloned()
+                .collect();
             if !now_dead.is_empty() {
                 state.tunnels.retain(|s| s.is_alive());
                 state.idle_since.clear();
                 // One backoff step per death-wave (tunnels usually die
                 // together — one server). The longest-lived session decides
                 // the reset rule, mirroring the single-tunnel semantics.
-                let longest_lived = now_dead.iter()
+                let longest_lived = now_dead
+                    .iter()
                     .map(|s| Duration::from_millis(s.stats().session_uptime_ms))
-                    .max().unwrap_or(Duration::ZERO);
-                state.backoff = jittered(next_backoff(state.backoff, Some(longest_lived),
-                    cfg.min_backoff, cfg.max_backoff, cfg.backoff_reset_after));
+                    .max()
+                    .unwrap_or(Duration::ZERO);
+                state.backoff = jittered(next_backoff(
+                    state.backoff,
+                    Some(longest_lived),
+                    cfg.min_backoff,
+                    cfg.max_backoff,
+                    cfg.backoff_reset_after,
+                ));
                 state.next_attempt = now + state.backoff;
                 for s in &now_dead {
-                    log::warn!("tunnel id={} lost after {:?} (reason={:?})",
+                    log::warn!(
+                        "tunnel id={} lost after {:?} (reason={:?})",
                         s.session_id(),
                         Duration::from_millis(s.stats().session_uptime_ms),
-                        s.shutdown_reason());
+                        s.shutdown_reason()
+                    );
                 }
-                log::warn!("{} tunnel(s) lost — reconnecting in {:?}", now_dead.len(), state.backoff);
+                log::warn!(
+                    "{} tunnel(s) lost — reconnecting in {:?}",
+                    now_dead.len(),
+                    state.backoff
+                );
             }
         }
 
@@ -266,21 +314,33 @@ fn maintenance_loop(mgr: Arc<TunnelManager>, stop_rx: mpsc::Receiver<()>) {
             !state.tunnels.iter().any(|s| s.is_alive())
         };
         if need_primary {
-            let due = { let state = mgr.state.lock().unwrap(); now >= state.next_attempt };
+            let due = {
+                let state = mgr.state.lock().unwrap();
+                now >= state.next_attempt
+            };
             if due {
                 match dial(&cfg) {
                     Ok(session) => {
                         let session = Arc::new(session);
-                        log::info!("tunnel established: id={} ({}/{})", session.session_id(),
-                            mgr.state.lock().unwrap().tunnels.len() + 1, max_tunnels);
+                        log::info!(
+                            "tunnel established: id={} ({}/{})",
+                            session.session_id(),
+                            mgr.state.lock().unwrap().tunnels.len() + 1,
+                            max_tunnels
+                        );
                         let mut state = mgr.state.lock().unwrap();
                         state.tunnels.push(session);
                         state.backoff = Duration::ZERO;
                     }
                     Err(e) => {
                         let mut state = mgr.state.lock().unwrap();
-                        state.backoff = jittered(next_backoff(state.backoff, None,
-                            cfg.min_backoff, cfg.max_backoff, cfg.backoff_reset_after));
+                        state.backoff = jittered(next_backoff(
+                            state.backoff,
+                            None,
+                            cfg.min_backoff,
+                            cfg.max_backoff,
+                            cfg.backoff_reset_after,
+                        ));
                         state.next_attempt = now + state.backoff;
                         log::warn!("connect: {e} — retrying in {:?}", state.backoff);
                     }
@@ -294,18 +354,35 @@ fn maintenance_loop(mgr: Arc<TunnelManager>, stop_rx: mpsc::Receiver<()>) {
             state.tunnels.len() < max_tunnels
                 && now >= state.scale_retry_at
                 && state.tunnels.iter().all(|s| s.is_alive())
-                && state.tunnels.iter().any(|s| s.stats().streams_open >= threshold)
+                && state
+                    .tunnels
+                    .iter()
+                    .any(|s| s.stats().streams_open >= threshold)
         };
         if want_scale_out {
-            let load = mgr.state.lock().unwrap().tunnels.iter()
-                .map(|s| s.stats().streams_open).max().unwrap_or(0);
-            log::info!("tunnels at {load}/{cap} streams — scaling out ({}/{})",
-                mgr.state.lock().unwrap().tunnels.len() + 1, max_tunnels);
+            let load = mgr
+                .state
+                .lock()
+                .unwrap()
+                .tunnels
+                .iter()
+                .map(|s| s.stats().streams_open)
+                .max()
+                .unwrap_or(0);
+            log::info!(
+                "tunnels at {load}/{cap} streams — scaling out ({}/{})",
+                mgr.state.lock().unwrap().tunnels.len() + 1,
+                max_tunnels
+            );
             match dial(&cfg) {
                 Ok(session) => {
                     let session = Arc::new(session);
-                    log::info!("tunnel established: id={} ({}/{})", session.session_id(),
-                        mgr.state.lock().unwrap().tunnels.len() + 1, max_tunnels);
+                    log::info!(
+                        "tunnel established: id={} ({}/{})",
+                        session.session_id(),
+                        mgr.state.lock().unwrap().tunnels.len() + 1,
+                        max_tunnels
+                    );
                     mgr.state.lock().unwrap().tunnels.push(session);
                 }
                 Err(e) => {
@@ -321,22 +398,32 @@ fn maintenance_loop(mgr: Arc<TunnelManager>, stop_rx: mpsc::Receiver<()>) {
             if state.tunnels.len() > 1 {
                 let mut retire: Vec<u64> = Vec::new();
                 for s in state.tunnels.iter() {
-                    if !s.is_alive() { continue; } // reaped above next tick
+                    if !s.is_alive() {
+                        continue;
+                    } // reaped above next tick
                     let sid = s.session_id();
                     if s.stats().streams_open == 0 {
                         let since = state.idle_since.entry(sid).or_insert(now);
-                        if since.elapsed() >= TUNNEL_IDLE_RETIRE { retire.push(sid); }
+                        if since.elapsed() >= TUNNEL_IDLE_RETIRE {
+                            retire.push(sid);
+                        }
                     } else {
                         state.idle_since.remove(&sid);
                     }
                 }
                 // Never retire below one tunnel.
                 for sid in retire {
-                    if state.tunnels.len() <= 1 { break; }
+                    if state.tunnels.len() <= 1 {
+                        break;
+                    }
                     if let Some(pos) = state.tunnels.iter().position(|s| s.session_id() == sid) {
                         let s = state.tunnels.remove(pos);
                         state.idle_since.remove(&sid);
-                        log::info!("tunnel id={} idle {:?} — scaled in", sid, TUNNEL_IDLE_RETIRE);
+                        log::info!(
+                            "tunnel id={} idle {:?} — scaled in",
+                            sid,
+                            TUNNEL_IDLE_RETIRE
+                        );
                         drop(s); // Arc drop → clean close when unreferenced
                     }
                 }
@@ -349,7 +436,9 @@ fn maintenance_loop(mgr: Arc<TunnelManager>, stop_rx: mpsc::Receiver<()>) {
 
 /// Stream-count threshold at/above which the manager dials another tunnel
 /// (headroom `SCALE_HEADROOM` below the per-session cap, floored at 1).
-pub fn scale_threshold(cap: u32) -> u32 { cap.saturating_sub(SCALE_HEADROOM).max(1) }
+pub fn scale_threshold(cap: u32) -> u32 {
+    cap.saturating_sub(SCALE_HEADROOM).max(1)
+}
 
 /// Dial one tunnel: TCP connect (+ obfs handshake if configured) and session
 /// start. `TcpCarrier::connect` enforces a 10 s connect timeout internally,
@@ -365,8 +454,12 @@ pub fn dial(cfg: &TunnelConfig) -> Result<Session, Error> {
         }
         Some(ObfsMode::Rand(_)) => {
             let sid = crate::session::SessionId::generate();
-            let carrier = TcpCarrier::connect_obfs(cfg.server, &cfg.psk, sid.as_bytes(),
-                cfg.obfs.as_ref().unwrap())?;
+            let carrier = TcpCarrier::connect_obfs(
+                cfg.server,
+                &cfg.psk,
+                sid.as_bytes(),
+                cfg.obfs.as_ref().unwrap(),
+            )?;
             Session::connect_pre_shared_with_sid(carrier, cfg.psk, cfg.session.clone(), sid)
         }
         // SSH mimicry: the RawLink hello packet rides the post-NEWKEYS
@@ -374,8 +467,13 @@ pub fn dial(cfg: &TunnelConfig) -> Result<Session, Error> {
         // (one RTT after the emulated curve25519 exchange).
         Some(ObfsMode::Ssh(scfg)) => {
             let (sid, early) = crate::session::build_first_packet(&cfg.psk)?;
-            let carrier = TcpCarrier::connect_obfs_ssh_early(cfg.server, &cfg.psk, scfg,
-                &early, sid.as_bytes())?;
+            let carrier = TcpCarrier::connect_obfs_ssh_early(
+                cfg.server,
+                &cfg.psk,
+                scfg,
+                &early,
+                sid.as_bytes(),
+            )?;
             Session::connect_pre_shared_preamble(carrier, cfg.psk, cfg.session.clone(), sid)
         }
     }
@@ -404,6 +502,9 @@ mod tests {
         // long-lived session resets to min
         assert_eq!(next_backoff(max, Some(reset), min, max, reset), min);
         // short-lived session keeps growing
-        assert_eq!(next_backoff(min, Some(Duration::from_secs(1)), min, max, reset), min * 2);
+        assert_eq!(
+            next_backoff(min, Some(Duration::from_secs(1)), min, max, reset),
+            min * 2
+        );
     }
 }

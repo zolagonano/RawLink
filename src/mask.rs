@@ -45,7 +45,9 @@ pub const MASKED_HEADER_LEN: usize = 17;
 fn derive(psk: &[u8; 32], sid: Option<&[u8; 8]>, dir: Direction) -> XChaCha20 {
     let mut ikm = Vec::with_capacity(32 + 8);
     ikm.extend_from_slice(psk);
-    if let Some(s) = sid { ikm.extend_from_slice(s); }
+    if let Some(s) = sid {
+        ikm.extend_from_slice(s);
+    }
     let (key_label, nonce_label, salt): (&[u8], &[u8], &[u8]) = match (sid, dir) {
         (None, _) => (
             b"rawlink-v6 first-hdr key",
@@ -67,7 +69,8 @@ fn derive(psk: &[u8; 32], sid: Option<&[u8; 8]>, dir: Direction) -> XChaCha20 {
     let mut key = [0u8; 32];
     let mut nonce = [0u8; 24];
     h.expand(key_label, &mut key).expect("hkdf expand key");
-    h.expand(nonce_label, &mut nonce).expect("hkdf expand nonce");
+    h.expand(nonce_label, &mut nonce)
+        .expect("hkdf expand nonce");
     XChaCha20::new(ChachaKey::from_slice(&key), XNonce::from_slice(&nonce))
 }
 
@@ -80,11 +83,17 @@ pub struct HeaderMasker {
 impl HeaderMasker {
     /// Masker for the client's very first packet (PSK-only derivation).
     pub fn first_flight(psk: &[u8; 32]) -> Self {
-        Self { cipher: derive(psk, None, Direction::ClientToServer), scratch: [0u8; MASKED_HEADER_LEN] }
+        Self {
+            cipher: derive(psk, None, Direction::ClientToServer),
+            scratch: [0u8; MASKED_HEADER_LEN],
+        }
     }
     /// Masker for session-phase packets (PSK + session id + direction).
     pub fn session(psk: &[u8; 32], sid: &[u8; 8], dir: Direction) -> Self {
-        Self { cipher: derive(psk, Some(sid), dir), scratch: [0u8; MASKED_HEADER_LEN] }
+        Self {
+            cipher: derive(psk, Some(sid), dir),
+            scratch: [0u8; MASKED_HEADER_LEN],
+        }
     }
     /// XOR the next 17 header bytes with the keystream (mask == unmask).
     pub fn apply(&mut self, header: &mut [u8]) {
@@ -136,7 +145,9 @@ pub struct ClientRecvMasker {
 
 impl ClientRecvMasker {
     pub fn new(psk: &[u8; 32], sid: &[u8; 8]) -> Self {
-        Self { normal: HeaderMasker::session(psk, sid, Direction::ServerToClient) }
+        Self {
+            normal: HeaderMasker::session(psk, sid, Direction::ServerToClient),
+        }
     }
     pub fn apply(&mut self, header: &mut [u8]) {
         self.normal.apply(header);
@@ -155,8 +166,16 @@ pub struct ServerRecvMasker {
 }
 
 impl ServerRecvMasker {
-    pub fn new(psk: &[u8; 32], sid_cell: std::sync::Arc<std::sync::Mutex<Option<[u8; 8]>>>) -> Self {
-        Self { first: Some(HeaderMasker::first_flight(psk)), psk: *psk, sid_cell, normal: None }
+    pub fn new(
+        psk: &[u8; 32],
+        sid_cell: std::sync::Arc<std::sync::Mutex<Option<[u8; 8]>>>,
+    ) -> Self {
+        Self {
+            first: Some(HeaderMasker::first_flight(psk)),
+            psk: *psk,
+            sid_cell,
+            normal: None,
+        }
     }
     pub fn apply(&mut self, header: &mut [u8]) {
         if let Some(mut f) = self.first.take() {
@@ -164,10 +183,17 @@ impl ServerRecvMasker {
             let mut sid = [0u8; 8];
             sid.copy_from_slice(&header[1..9]);
             *self.sid_cell.lock().unwrap() = Some(sid);
-            self.normal = Some(HeaderMasker::session(&self.psk, &sid, Direction::ClientToServer));
+            self.normal = Some(HeaderMasker::session(
+                &self.psk,
+                &sid,
+                Direction::ClientToServer,
+            ));
             return;
         }
-        self.normal.as_mut().expect("session mask initialized after first packet").apply(header);
+        self.normal
+            .as_mut()
+            .expect("session mask initialized after first packet")
+            .apply(header);
     }
 }
 
@@ -182,16 +208,30 @@ pub struct ServerSendMasker {
 }
 
 impl ServerSendMasker {
-    pub fn new(psk: &[u8; 32], sid_cell: std::sync::Arc<std::sync::Mutex<Option<[u8; 8]>>>) -> Self {
-        Self { psk: *psk, sid_cell, normal: None }
+    pub fn new(
+        psk: &[u8; 32],
+        sid_cell: std::sync::Arc<std::sync::Mutex<Option<[u8; 8]>>>,
+    ) -> Self {
+        Self {
+            psk: *psk,
+            sid_cell,
+            normal: None,
+        }
     }
     pub fn apply(&mut self, header: &mut [u8]) -> Result<(), crate::Error> {
         if self.normal.is_none() {
-            let sid = self.sid_cell.lock().unwrap()
-                .ok_or_else(|| crate::Error::Carrier(crate::error::CarrierError::new(
-                    "tcp", "mask", "server sent before the session id was learned")))?
-                ;
-            self.normal = Some(HeaderMasker::session(&self.psk, &sid, Direction::ServerToClient));
+            let sid = self.sid_cell.lock().unwrap().ok_or_else(|| {
+                crate::Error::Carrier(crate::error::CarrierError::new(
+                    "tcp",
+                    "mask",
+                    "server sent before the session id was learned",
+                ))
+            })?;
+            self.normal = Some(HeaderMasker::session(
+                &self.psk,
+                &sid,
+                Direction::ServerToClient,
+            ));
         }
         self.normal.as_mut().unwrap().apply(header);
         Ok(())
@@ -221,7 +261,8 @@ mod tests {
         let mut d = HeaderMasker::session(&psk, &sid, Direction::ClientToServer);
         let mut e = HeaderMasker::session(&psk, &sid, Direction::ServerToClient);
         for i in 0..5 {
-            let mut m1 = hdr; m1[0] = 0x30 + i as u8;
+            let mut m1 = hdr;
+            m1[0] = 0x30 + i as u8;
             let orig = m1;
             c.apply(&mut m1);
             let masked = m1;
@@ -237,12 +278,15 @@ mod tests {
     #[test]
     fn different_sessions_different_keystreams() {
         let psk = [1u8; 32];
-        let s1 = [1u8; 8]; let s2 = [2u8; 8];
+        let s1 = [1u8; 8];
+        let s2 = [2u8; 8];
         let hdr = [0x33u8; 17];
         let mut m1 = HeaderMasker::session(&psk, &s1, Direction::ClientToServer);
         let mut m2 = HeaderMasker::session(&psk, &s2, Direction::ClientToServer);
-        let mut a = hdr; let mut b = hdr;
-        m1.apply(&mut a); m2.apply(&mut b);
+        let mut a = hdr;
+        let mut b = hdr;
+        m1.apply(&mut a);
+        m2.apply(&mut b);
         assert_ne!(a, b);
     }
 
@@ -261,7 +305,11 @@ mod tests {
         let mut recv = ServerRecvMasker::new(&psk, Arc::clone(&cell));
         recv.apply(&mut hdr);
         assert_eq!(&hdr[1..9], &sid, "sid recovered");
-        assert_eq!(*cell.lock().unwrap(), Some(sid), "sid shared with send side");
+        assert_eq!(
+            *cell.lock().unwrap(),
+            Some(sid),
+            "sid shared with send side"
+        );
         // Subsequent packets use the session mask and round-trip.
         let mut client = ClientSendMasker::new(&psk, &sid);
         let mut recv2 = ServerRecvMasker::new(&psk, Arc::new(Mutex::new(None)));
@@ -269,12 +317,12 @@ mod tests {
         // the real wire — the server learns the sid from it).
         let mut p2 = [0x30u8; 17];
         p2[1..9].copy_from_slice(&sid);
-        client.apply(&mut p2);       // first-flight
-        recv2.apply(&mut p2);        // server unmasks, learns sid
+        client.apply(&mut p2); // first-flight
+        recv2.apply(&mut p2); // server unmasks, learns sid
         let orig = [0x31u8; 17];
         let mut p3 = orig;
-        client.apply(&mut p3);       // session-phase
-        recv2.apply(&mut p3);        // session-phase
+        client.apply(&mut p3); // session-phase
+        recv2.apply(&mut p3); // session-phase
         assert_eq!(p3, orig, "session-phase roundtrip");
     }
 }

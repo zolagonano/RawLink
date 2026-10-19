@@ -12,10 +12,16 @@ use std::time::Duration;
 static TEST_LOCK: Mutex<()> = Mutex::new(());
 
 fn free_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
+    TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
 }
 fn rawlink_bin() -> String {
-    if let Ok(p) = std::env::var("CARGO_BIN_EXE_rawlink") { return p; }
+    if let Ok(p) = std::env::var("CARGO_BIN_EXE_rawlink") {
+        return p;
+    }
     let mut p = std::env::current_dir().unwrap();
     p.push("target/debug/rawlink");
     p.to_string_lossy().into_owned()
@@ -25,27 +31,59 @@ const PSK: &str = "0011223344556677889900aabbccddeeff0011223344556677889900aabbc
 fn spawn_server(port: u16) -> Child {
     let bin = rawlink_bin();
     let err_dest = if std::env::var("RL_KEEP_LOGS").is_ok() {
-        std::fs::File::create("/tmp/rl_test_server.log").unwrap().into()
-    } else { Stdio::null() };
-    Command::new(&bin).args(["server",
-        "--listen",&format!("127.0.0.1:{port}"),
-        "--psk",PSK,"--log-level","warn",
-    ]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(err_dest)
-    .spawn().expect("spawn server")
+        std::fs::File::create("/tmp/rl_test_server.log")
+            .unwrap()
+            .into()
+    } else {
+        Stdio::null()
+    };
+    Command::new(&bin)
+        .args([
+            "server",
+            "--listen",
+            &format!("127.0.0.1:{port}"),
+            "--psk",
+            PSK,
+            "--log-level",
+            "warn",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(err_dest)
+        .spawn()
+        .expect("spawn server")
 }
 fn spawn_client(srv: u16, socks: u16) -> Child {
     let bin = rawlink_bin();
     let err_dest = if std::env::var("RL_KEEP_LOGS").is_ok() {
-        std::fs::File::create("/tmp/rl_test_client.log").unwrap().into()
-    } else { Stdio::null() };
-    Command::new(&bin).args(["client",
-        "--server",&format!("127.0.0.1:{srv}"),
-        "--socks-listen",&format!("127.0.0.1:{socks}"),
-        "--psk",PSK,"--log-level","warn",
-    ]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(err_dest)
-    .spawn().expect("spawn client")
+        std::fs::File::create("/tmp/rl_test_client.log")
+            .unwrap()
+            .into()
+    } else {
+        Stdio::null()
+    };
+    Command::new(&bin)
+        .args([
+            "client",
+            "--server",
+            &format!("127.0.0.1:{srv}"),
+            "--socks-listen",
+            &format!("127.0.0.1:{socks}"),
+            "--psk",
+            PSK,
+            "--log-level",
+            "warn",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(err_dest)
+        .spawn()
+        .expect("spawn client")
 }
-fn kill(c: &mut Child) { let _ = c.kill(); let _ = c.wait(); }
+fn kill(c: &mut Child) {
+    let _ = c.kill();
+    let _ = c.wait();
+}
 
 struct EchoServer {
     addr: std::net::SocketAddr,
@@ -54,7 +92,9 @@ struct EchoServer {
 }
 
 impl EchoServer {
-    fn addr(&self) -> std::net::SocketAddr { self.addr }
+    fn addr(&self) -> std::net::SocketAddr {
+        self.addr
+    }
     fn shutdown(self) {
         self.shutdown.store(true, Ordering::SeqCst);
         let _ = self.handle.join();
@@ -78,8 +118,12 @@ fn spawn_echo() -> EchoServer {
                         let mut buf = [0u8; 8192];
                         loop {
                             match s.read(&mut buf) {
-                                Ok(0)|Err(_) => break,
-                                Ok(n) => { if s.write_all(&buf[..n]).is_err() { break; } }
+                                Ok(0) | Err(_) => break,
+                                Ok(n) => {
+                                    if s.write_all(&buf[..n]).is_err() {
+                                        break;
+                                    }
+                                }
                             }
                         }
                     });
@@ -91,19 +135,27 @@ fn spawn_echo() -> EchoServer {
             }
         }
     });
-    EchoServer { addr: a, shutdown, handle }
+    EchoServer {
+        addr: a,
+        shutdown,
+        handle,
+    }
 }
 
 fn socks5_connect(port: u16, dest: std::net::SocketAddr) -> TcpStream {
     let mut s = TcpStream::connect(format!("127.0.0.1:{port}")).unwrap();
-    s.write_all(&[0x05,1,0x00]).unwrap();
-    let mut h = [0u8;2]; s.read_exact(&mut h).unwrap();
-    let mut req = vec![0x05,0x01,0x00,0x01];
+    s.write_all(&[0x05, 1, 0x00]).unwrap();
+    let mut h = [0u8; 2];
+    s.read_exact(&mut h).unwrap();
+    let mut req = vec![0x05, 0x01, 0x00, 0x01];
     req.extend_from_slice(&match dest.ip() {
-        std::net::IpAddr::V4(v) => v.octets(), _ => unreachable!() });
+        std::net::IpAddr::V4(v) => v.octets(),
+        _ => unreachable!(),
+    });
     req.extend_from_slice(&dest.port().to_be_bytes());
     s.write_all(&req).unwrap();
-    let mut r = [0u8;10]; s.read_exact(&mut r).unwrap();
+    let mut r = [0u8; 10];
+    s.read_exact(&mut r).unwrap();
     assert_eq!(r[1], 0, "SOCKS5 CONNECT failed");
     s
 }
@@ -119,28 +171,39 @@ fn wait_tunnel_ready(socks: u16, dest: std::net::SocketAddr) {
         if std::time::Instant::now() >= deadline {
             panic!("tunnel not ready after 20s — SOCKS probe kept failing");
         }
-        let ok = TcpStream::connect(format!("127.0.0.1:{socks}")).ok()
+        let ok = TcpStream::connect(format!("127.0.0.1:{socks}"))
+            .ok()
             .and_then(|mut s| {
                 s.write_all(&[0x05, 1, 0x00]).ok()?;
                 let mut h = [0u8; 2];
                 s.read_exact(&mut h).ok()?;
-                if h != [0x05, 0x00] { return None; }
+                if h != [0x05, 0x00] {
+                    return None;
+                }
                 let mut req = vec![0x05, 0x01, 0x00, 0x01];
                 req.extend_from_slice(&match dest.ip() {
-                    std::net::IpAddr::V4(v) => v.octets(), _ => return None });
+                    std::net::IpAddr::V4(v) => v.octets(),
+                    _ => return None,
+                });
                 req.extend_from_slice(&dest.port().to_be_bytes());
                 s.write_all(&req).ok()?;
                 let mut r = [0u8; 10];
                 s.read_exact(&mut r).ok()?;
-                if r[1] != 0 { return None; }
+                if r[1] != 0 {
+                    return None;
+                }
                 s.write_all(b"ping").ok()?;
                 let mut got = [0u8; 4];
                 s.read_exact(&mut got).ok()?;
-                if &got != b"ping" { return None; }
+                if &got != b"ping" {
+                    return None;
+                }
                 Some(())
             })
             .is_some();
-        if ok { return; }
+        if ok {
+            return;
+        }
         thread::sleep(Duration::from_millis(200));
     }
 }
@@ -176,7 +239,9 @@ fn large_transfer_integrity() {
         let mut total = 0;
         while total < got.len() {
             let n = s.read(&mut got[total..]).unwrap();
-            if n == 0 { break; }
+            if n == 0 {
+                break;
+            }
             total += n;
         }
         assert_eq!(total, data_clone.len(), "incomplete echo: got {total}");
@@ -189,7 +254,8 @@ fn large_transfer_integrity() {
 
     let actual_sha = handle.join().expect("thread");
     assert_eq!(actual_sha, expected_sha, "SHA mismatch — data corrupted!");
-    kill(&mut client); kill(&mut server);
+    kill(&mut client);
+    kill(&mut server);
     echo.shutdown();
 }
 
@@ -218,14 +284,23 @@ fn backpressure_no_data_loss() {
         let mut total = 0;
         while total < got.len() {
             let n = s.read(&mut got[total..]).unwrap();
-            if n == 0 { break; }
+            if n == 0 {
+                break;
+            }
             total += n;
         }
-        assert_eq!(total, data_clone.len(), "data loss: sent {} got {}", data_clone.len(), total);
+        assert_eq!(
+            total,
+            data_clone.len(),
+            "data loss: sent {} got {}",
+            data_clone.len(),
+            total
+        );
         assert_eq!(&got[..], &data_clone[..], "data corruption");
     });
     handle.join().expect("thread");
-    kill(&mut client); kill(&mut server);
+    kill(&mut client);
+    kill(&mut server);
     echo.shutdown();
 }
 
@@ -251,7 +326,9 @@ fn concurrent_large_plus_small() {
         let mut total = 0;
         while total < got.len() {
             let n = s.read(&mut got[total..]).unwrap();
-            if n == 0 { break; }
+            if n == 0 {
+                break;
+            }
             total += n;
         }
         assert_eq!(total, large_clone.len());
@@ -275,8 +352,11 @@ fn concurrent_large_plus_small() {
     }
 
     big_handle.join().expect("big");
-    for h in small_handles { h.join().expect("small"); }
-    kill(&mut client); kill(&mut server);
+    for h in small_handles {
+        h.join().expect("small");
+    }
+    kill(&mut client);
+    kill(&mut server);
     echo.shutdown();
 }
 
@@ -306,7 +386,8 @@ fn repeated_open_close_cycles() {
         h.join().expect("cycle thread");
     }
 
-    kill(&mut client); kill(&mut server);
+    kill(&mut client);
+    kill(&mut server);
     echo.shutdown();
 }
 
@@ -331,7 +412,9 @@ fn stress_concurrent_5_streams_4mb_sha256() {
         let sp = socks;
         let dest = echo.addr();
         // Generate deterministic payload + compute SHA-256
-        let payload: Vec<u8> = (0..payload_size).map(|x| ((x * 7 + i) % 251) as u8).collect();
+        let payload: Vec<u8> = (0..payload_size)
+            .map(|x| ((x * 7 + i) % 251) as u8)
+            .collect();
         let expected_sha = {
             use std::collections::hash_map::DefaultHasher;
             use std::hash::Hasher;
@@ -360,8 +443,12 @@ fn stress_concurrent_5_streams_4mb_sha256() {
                 match s.read(&mut got[total..]) {
                     Ok(0) => break,
                     Ok(n) => total += n,
-                    Err(e) if e.kind() == std::io::ErrorKind::TimedOut
-                          || e.kind() == std::io::ErrorKind::WouldBlock => continue,
+                    Err(e)
+                        if e.kind() == std::io::ErrorKind::TimedOut
+                            || e.kind() == std::io::ErrorKind::WouldBlock =>
+                    {
+                        continue;
+                    }
                     Err(_) => break,
                 }
             }
@@ -371,12 +458,20 @@ fn stress_concurrent_5_streams_4mb_sha256() {
             let mut h = DefaultHasher::new();
             h.write(&got[..total]);
             let actual_sha = h.finish();
-            assert_eq!(total, payload_clone.len(), "stream {i}: got {total} expected {}", payload_clone.len());
+            assert_eq!(
+                total,
+                payload_clone.len(),
+                "stream {i}: got {total} expected {}",
+                payload_clone.len()
+            );
             assert_eq!(actual_sha, expected_sha, "stream {i}: SHA mismatch");
         }));
     }
-    for h in handles { h.join().expect("stream thread"); }
-    kill(&mut client); kill(&mut server);
+    for h in handles {
+        h.join().expect("stream thread");
+    }
+    kill(&mut client);
+    kill(&mut server);
     echo.shutdown();
 }
 
@@ -407,7 +502,9 @@ fn regression_pending_events_no_drop() {
     for i in 0..N_STREAMS {
         let sp = socks;
         let dest = echo.addr();
-        let payload: Vec<u8> = (0..payload_size).map(|x| ((x * 7 + i) % 251) as u8).collect();
+        let payload: Vec<u8> = (0..payload_size)
+            .map(|x| ((x * 7 + i) % 251) as u8)
+            .collect();
         let expected_sha = {
             use std::collections::hash_map::DefaultHasher;
             use std::hash::Hasher;
@@ -432,8 +529,12 @@ fn regression_pending_events_no_drop() {
                 match s.read(&mut got[total..]) {
                     Ok(0) => break,
                     Ok(n) => total += n,
-                    Err(e) if e.kind() == std::io::ErrorKind::TimedOut
-                          || e.kind() == std::io::ErrorKind::WouldBlock => continue,
+                    Err(e)
+                        if e.kind() == std::io::ErrorKind::TimedOut
+                            || e.kind() == std::io::ErrorKind::WouldBlock =>
+                    {
+                        continue;
+                    }
                     Err(_) => break,
                 }
             }
@@ -443,11 +544,22 @@ fn regression_pending_events_no_drop() {
             let mut h = DefaultHasher::new();
             h.write(&got[..total]);
             let actual_sha = h.finish();
-            assert_eq!(total, payload_clone.len(), "stream {i}: got {total} expected {}", payload_clone.len());
-            assert_eq!(actual_sha, expected_sha, "stream {i}: SHA mismatch — DATA LOSS or CORRUPTION");
+            assert_eq!(
+                total,
+                payload_clone.len(),
+                "stream {i}: got {total} expected {}",
+                payload_clone.len()
+            );
+            assert_eq!(
+                actual_sha, expected_sha,
+                "stream {i}: SHA mismatch — DATA LOSS or CORRUPTION"
+            );
         }));
     }
-    for h in handles { h.join().expect("stream thread"); }
-    kill(&mut client); kill(&mut server);
+    for h in handles {
+        h.join().expect("stream thread");
+    }
+    kill(&mut client);
+    kill(&mut server);
     echo.shutdown();
 }

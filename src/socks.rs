@@ -51,7 +51,12 @@ fn handshake(io: &mut TcpStream) -> std::io::Result<Option<Socks5Request>> {
     // Greeting: VER NMETHODS METHODS…
     let mut hdr = [0u8; 2];
     io.read_exact(&mut hdr)?;
-    if hdr[0] != 0x05 { return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "not socks5")); }
+    if hdr[0] != 0x05 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "not socks5",
+        ));
+    }
     let mut methods = vec![0u8; hdr[1] as usize];
     io.read_exact(&mut methods)?;
     if !methods.contains(&0x00) {
@@ -63,24 +68,42 @@ fn handshake(io: &mut TcpStream) -> std::io::Result<Option<Socks5Request>> {
     // Request: VER CMD RSV ATYP DST.ADDR DST.PORT
     let mut req = [0u8; 4];
     io.read_exact(&mut req)?;
-    if req[0] != 0x05 { return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "not socks5")); }
-    if req[1] != 0x01 { // only CONNECT
+    if req[0] != 0x05 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "not socks5",
+        ));
+    }
+    if req[1] != 0x01 {
+        // only CONNECT
         reply(&mut out, 0x07)?;
         return Ok(None);
     }
     let atyp = req[3];
     let addr = match atyp {
-        0x01 => { let mut a = [0u8; 4]; io.read_exact(&mut a)?; a.to_vec() }
-        0x04 => { let mut a = [0u8; 16]; io.read_exact(&mut a)?; a.to_vec() }
+        0x01 => {
+            let mut a = [0u8; 4];
+            io.read_exact(&mut a)?;
+            a.to_vec()
+        }
+        0x04 => {
+            let mut a = [0u8; 16];
+            io.read_exact(&mut a)?;
+            a.to_vec()
+        }
         0x03 => {
-            let mut l = [0u8; 1]; io.read_exact(&mut l)?;
+            let mut l = [0u8; 1];
+            io.read_exact(&mut l)?;
             let mut buf = vec![0u8; l[0] as usize];
             io.read_exact(&mut buf)?;
             let mut a = vec![l[0]];
             a.extend_from_slice(&buf);
             a
         }
-        _ => { reply(&mut out, 0x08)?; return Ok(None); }
+        _ => {
+            reply(&mut out, 0x08)?;
+            return Ok(None);
+        }
     };
     let mut pb = [0u8; 2];
     io.read_exact(&mut pb)?;
@@ -99,8 +122,11 @@ pub fn serve_connection(mut io: TcpStream, manager: &TunnelManager) {
     io.set_nodelay(true).ok();
     let req = match handshake(&mut io) {
         Ok(Some(r)) => r,
-        Ok(None) => return,           // handshake served an error reply
-        Err(e) => { log::debug!("socks5 handshake: {e}"); return; }
+        Ok(None) => return, // handshake served an error reply
+        Err(e) => {
+            log::debug!("socks5 handshake: {e}");
+            return;
+        }
     };
     log::info!("SOCKS5 CONNECT (atyp={}, port={})", req.atyp, req.port);
 
@@ -109,7 +135,9 @@ pub fn serve_connection(mut io: TcpStream, manager: &TunnelManager) {
         Err(e) => {
             log::warn!("socks5: no tunnel available: {e}");
             let mut out = io.try_clone().ok();
-            if let Some(o) = out.as_mut() { let _ = reply(o, 0x01); }
+            if let Some(o) = out.as_mut() {
+                let _ = reply(o, 0x01);
+            }
             return;
         }
     };
@@ -122,29 +150,42 @@ pub fn serve_connection(mut io: TcpStream, manager: &TunnelManager) {
         log::warn!("socks5: open_tcp: {e}");
         let _ = stream.close();
         let mut out = io.try_clone().ok();
-        if let Some(o) = out.as_mut() { let _ = reply(o, 0x01); }
+        if let Some(o) = out.as_mut() {
+            let _ = reply(o, 0x01);
+        }
         return;
     }
     match stream.wait_for_open_tcp_response() {
         Ok(resp) if resp.status == 0 => {}
         Ok(resp) => {
-            log::warn!("socks5: dial failed: status={} reason={}", resp.status, resp.reason);
+            log::warn!(
+                "socks5: dial failed: status={} reason={}",
+                resp.status,
+                resp.reason
+            );
             let _ = stream.close();
             let mut out = io.try_clone().ok();
-            if let Some(o) = out.as_mut() { let _ = reply(o, resp.status); }
+            if let Some(o) = out.as_mut() {
+                let _ = reply(o, resp.status);
+            }
             return;
         }
         Err(e) => {
             log::warn!("socks5: dial response: {e}");
             let _ = stream.close();
             let mut out = io.try_clone().ok();
-            if let Some(o) = out.as_mut() { let _ = reply(o, 0x01); }
+            if let Some(o) = out.as_mut() {
+                let _ = reply(o, 0x01);
+            }
             return;
         }
     }
 
     let mut out = io.try_clone().ok();
-    let ok = out.as_mut().map(|o| reply(o, 0x00).is_ok()).unwrap_or(false);
+    let ok = out
+        .as_mut()
+        .map(|o| reply(o, 0x00).is_ok())
+        .unwrap_or(false);
     if !ok {
         let _ = stream.close();
         return;

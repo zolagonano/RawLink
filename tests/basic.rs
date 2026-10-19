@@ -1,5 +1,5 @@
 //! Basic integration tests for TCP carrier round-trip + crypto + framing.
-use rawlink::carrier::{Carrier, SimCarrier, SimAddr, SimConfig, LossPattern, DelayPattern};
+use rawlink::carrier::{Carrier, DelayPattern, LossPattern, SimAddr, SimCarrier, SimConfig};
 use rawlink::config::Config;
 use rawlink::session::Session;
 use std::thread;
@@ -16,38 +16,64 @@ fn sim_carrier_round_trip() {
 
 #[test]
 fn sim_carrier_loss_10pct() {
-    let c = SimCarrier::new(SimConfig { loss: LossPattern::EveryNth(10), ..Default::default() });
-    for i in 0..100u32 { c.send(SimAddr::Server, format!("p{i}").as_bytes()).unwrap(); }
+    let c = SimCarrier::new(SimConfig {
+        loss: LossPattern::EveryNth(10),
+        ..Default::default()
+    });
+    for i in 0..100u32 {
+        c.send(SimAddr::Server, format!("p{i}").as_bytes()).unwrap();
+    }
     thread::sleep(Duration::from_millis(10));
     let mut got = Vec::new();
-    while let Some((_, d)) = c.recv().unwrap() { got.push(d); }
-    assert!(got.len() >= 90, "expected >= 90 delivered, got {}", got.len());
+    while let Some((_, d)) = c.recv().unwrap() {
+        got.push(d);
+    }
+    assert!(
+        got.len() >= 90,
+        "expected >= 90 delivered, got {}",
+        got.len()
+    );
 }
 
 #[test]
 fn sim_carrier_duplicates() {
-    let c = SimCarrier::new(SimConfig { duplicate: true, ..Default::default() });
+    let c = SimCarrier::new(SimConfig {
+        duplicate: true,
+        ..Default::default()
+    });
     c.send(SimAddr::Server, b"dup").unwrap();
     thread::sleep(Duration::from_millis(5));
     let mut got = Vec::new();
-    while let Some((_, d)) = c.recv().unwrap() { got.push(d); }
+    while let Some((_, d)) = c.recv().unwrap() {
+        got.push(d);
+    }
     assert!(!got.is_empty());
-    for d in &got { assert_eq!(d, b"dup"); }
+    for d in &got {
+        assert_eq!(d, b"dup");
+    }
 }
 
 #[test]
 fn sim_carrier_reorder() {
     let c = SimCarrier::new(SimConfig {
-        delay: DelayPattern::Variable { base: Duration::from_millis(0),
-            step: Duration::from_millis(1), modulus: 10 },
+        delay: DelayPattern::Variable {
+            base: Duration::from_millis(0),
+            step: Duration::from_millis(1),
+            modulus: 10,
+        },
         ..Default::default()
     });
-    for i in 0..10u32 { c.send(SimAddr::Server, format!("p{i}").as_bytes()).unwrap(); }
+    for i in 0..10u32 {
+        c.send(SimAddr::Server, format!("p{i}").as_bytes()).unwrap();
+    }
     thread::sleep(Duration::from_millis(20));
     let mut got: Vec<String> = Vec::new();
-    while let Some((_, d)) = c.recv().unwrap() { got.push(String::from_utf8(d).unwrap()); }
+    while let Some((_, d)) = c.recv().unwrap() {
+        got.push(String::from_utf8(d).unwrap());
+    }
     assert_eq!(got.len(), 10);
-    let mut sorted = got.clone(); sorted.sort();
+    let mut sorted = got.clone();
+    sorted.sort();
     let expected: Vec<String> = (0..10).map(|i| format!("p{i}")).collect();
     assert_eq!(sorted, expected);
 }
@@ -55,7 +81,11 @@ fn sim_carrier_reorder() {
 #[test]
 fn frame_round_trip() {
     use rawlink::frame::*;
-    let f = Frame::Data(DataFrame { stream_id: 42, offset: 100, payload: b"hello".to_vec() });
+    let f = Frame::Data(DataFrame {
+        stream_id: 42,
+        offset: 100,
+        payload: b"hello".to_vec(),
+    });
     let bytes = f.encode();
     let (p, n) = Frame::parse(&bytes).unwrap();
     assert_eq!(n, bytes.len());
@@ -82,7 +112,10 @@ fn config_validation() {
     c.mss = 0;
     assert!(c.validate().is_err(), "mss=0 must be rejected");
     c.mss = rawlink::config::DEFAULT_MTU;
-    assert!(c.validate().is_err(), "mss larger than payload capacity must be rejected");
+    assert!(
+        c.validate().is_err(),
+        "mss larger than payload capacity must be rejected"
+    );
     c.mss = 1200;
     c.max_streams_per_session = 0;
     assert!(c.validate().is_err(), "zero stream cap must be rejected");
@@ -115,7 +148,12 @@ fn backoff_doubles_until_cap() {
 #[test]
 fn backoff_resets_after_long_session() {
     use rawlink::client::next_backoff;
-    let b = next_backoff(Duration::from_secs(30), Some(Duration::from_secs(60)),
-        Duration::from_secs(1), Duration::from_secs(30), Duration::from_secs(30));
+    let b = next_backoff(
+        Duration::from_secs(30),
+        Some(Duration::from_secs(60)),
+        Duration::from_secs(1),
+        Duration::from_secs(30),
+        Duration::from_secs(30),
+    );
     assert_eq!(b, Duration::from_secs(1));
 }

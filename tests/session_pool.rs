@@ -22,7 +22,8 @@ static LOG_INIT: std::sync::Once = std::sync::Once::new();
 fn init_log() {
     LOG_INIT.call_once(|| {
         let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
-            .format_timestamp_millis().try_init();
+            .format_timestamp_millis()
+            .try_init();
     });
 }
 
@@ -44,15 +45,24 @@ impl Carrier for PreLoaded {
     fn recv(&self) -> Result<Option<(Self::Address, Vec<u8>)>, rawlink::Error> {
         if self.kill.load(std::sync::atomic::Ordering::SeqCst) {
             return Err(rawlink::Error::Carrier(rawlink::error::CarrierError::new(
-                "test", "recv", "server killed")));
+                "test",
+                "recv",
+                "server killed",
+            )));
         }
         let mut f = self.first.lock().unwrap();
-        if let Some(b) = f.take() { return Ok(Some((self.addr, b))); }
+        if let Some(b) = f.take() {
+            return Ok(Some((self.addr, b)));
+        }
         drop(f);
         self.inner.recv()
     }
-    fn mtu(&self) -> usize { self.inner.mtu() }
-    fn local_addr(&self) -> Self::Address { self.inner.local_addr() }
+    fn mtu(&self) -> usize {
+        self.inner.mtu()
+    }
+    fn local_addr(&self) -> Self::Address {
+        self.inner.local_addr()
+    }
 }
 
 /// An echo server over RawLink: every admitted session gets every OPEN_TCP
@@ -60,14 +70,21 @@ impl Carrier for PreLoaded {
 /// Setting `stop` makes every worker return (sessions drop → the client's
 /// tunnels die) and the accept loop exit (listener drops → port freed) —
 /// the "server off" event.
-fn serve_echo(addr: SocketAddr, obfs: bool, sid_tx: mpsc::Sender<u64>, stop: Arc<std::sync::atomic::AtomicBool>) {
+fn serve_echo(
+    addr: SocketAddr,
+    obfs: bool,
+    sid_tx: mpsc::Sender<u64>,
+    stop: Arc<std::sync::atomic::AtomicBool>,
+) {
     let listener = if obfs {
         TcpListenerCarrier::bind_obfs(addr, &PSK, &rawlink::ObfsMode::Rand(obfs_cfg())).unwrap()
     } else {
         TcpListenerCarrier::bind(addr, &PSK).unwrap()
     };
     'outer: loop {
-        if stop.load(std::sync::atomic::Ordering::SeqCst) { return; }
+        if stop.load(std::sync::atomic::Ordering::SeqCst) {
+            return;
+        }
         match listener.accept() {
             Ok(carrier) => {
                 let first = loop {
@@ -75,7 +92,9 @@ fn serve_echo(addr: SocketAddr, obfs: bool, sid_tx: mpsc::Sender<u64>, stop: Arc
                         Ok(Some((_, b))) => break b,
                         Ok(None) => {
                             thread::sleep(Duration::from_millis(2));
-                            if stop.load(std::sync::atomic::Ordering::SeqCst) { return; }
+                            if stop.load(std::sync::atomic::Ordering::SeqCst) {
+                                return;
+                            }
                         }
                         Err(_) => continue 'outer,
                     }
@@ -90,7 +109,8 @@ fn serve_echo(addr: SocketAddr, obfs: bool, sid_tx: mpsc::Sender<u64>, stop: Arc
                     first: std::sync::Mutex::new(Some(first)),
                     kill: Arc::clone(&stop),
                 };
-                let session = Session::accept_pre_shared(carrier, sid, PSK, Config::default()).unwrap();
+                let session =
+                    Session::accept_pre_shared(carrier, sid, PSK, Config::default()).unwrap();
                 let _ = sid_tx.send(session.session_id());
                 thread::spawn(move || {
                     // Accept + echo until the session dies ("server off" makes
@@ -101,11 +121,17 @@ fn serve_echo(addr: SocketAddr, obfs: bool, sid_tx: mpsc::Sender<u64>, stop: Arc
                         match session.accept_open_tcp() {
                             Ok((stream, _)) => {
                                 let _ = stream.send_open_tcp_response(0x00, "");
-                                thread::spawn(move || loop {
-                                    match stream.read() {
-                                        Ok(b) if b.is_empty() => break,
-                                        Ok(b) => { if stream.write(&b).is_err() { break; } }
-                                        Err(_) => break,
+                                thread::spawn(move || {
+                                    loop {
+                                        match stream.read() {
+                                            Ok(b) if b.is_empty() => break,
+                                            Ok(b) => {
+                                                if stream.write(&b).is_err() {
+                                                    break;
+                                                }
+                                            }
+                                            Err(_) => break,
+                                        }
                                     }
                                 });
                             }
@@ -127,7 +153,12 @@ fn stop_echo_server(stop: &Arc<std::sync::atomic::AtomicBool>, addr: SocketAddr)
 }
 
 fn obfs_cfg() -> ObfsConfig {
-    ObfsConfig { padding_max: 24, dummy_min_ms: 80, dummy_max_ms: 160, dummy_size_max: 256 }
+    ObfsConfig {
+        padding_max: 24,
+        dummy_min_ms: 80,
+        dummy_max_ms: 160,
+        dummy_size_max: 256,
+    }
 }
 
 #[test]
@@ -146,7 +177,10 @@ fn tunnels_scale_out_under_stream_pressure_and_back_in() {
     let mgr = TunnelManager::start(TunnelConfig {
         server: addr,
         psk: PSK,
-        session: Config { max_streams_per_session: 8, ..Default::default() },
+        session: Config {
+            max_streams_per_session: 8,
+            ..Default::default()
+        },
         obfs: Some(rawlink::ObfsMode::Rand(obfs_cfg())),
         max_tunnels: 3,
         min_backoff: Duration::from_millis(200),
@@ -156,7 +190,10 @@ fn tunnels_scale_out_under_stream_pressure_and_back_in() {
 
     // 1) The first tunnel comes up (obfs enabled).
     while mgr.least_loaded().is_none() {
-        assert!(t0.elapsed() < Duration::from_secs(10), "first tunnel never came up");
+        assert!(
+            t0.elapsed() < Duration::from_secs(10),
+            "first tunnel never came up"
+        );
         thread::sleep(Duration::from_millis(20));
     }
 
@@ -164,34 +201,52 @@ fn tunnels_scale_out_under_stream_pressure_and_back_in() {
     let s0 = mgr.least_loaded().unwrap();
     let st0 = s0.open_stream().unwrap();
     st0.open_tcp(1, vec![127, 0, 0, 1], 80).unwrap();
-    assert_eq!(st0.wait_for_open_tcp_response().unwrap().status, 0x00,
-        "stream on the first tunnel must dial");
+    assert_eq!(
+        st0.wait_for_open_tcp_response().unwrap().status,
+        0x00,
+        "stream on the first tunnel must dial"
+    );
     wait_for_len(&mgr, 2, Duration::from_secs(10), "after 1 loaded stream");
 
     // 3) More streams → the set keeps scaling until max_tunnels is hit, and
     //    streams ROUTE to the lightest tunnel (loads stay balanced).
     let mut streams: Vec<Arc<rawlink::session::Stream>> = vec![Arc::new(st0)];
     for _ in 0..6 {
-        let s = mgr.least_loaded().expect("set must keep at least one live tunnel");
+        let s = mgr
+            .least_loaded()
+            .expect("set must keep at least one live tunnel");
         let st = Arc::new(s.open_stream().unwrap());
         st.open_tcp(1, vec![127, 0, 0, 1], 80).unwrap();
         let resp = st.wait_for_open_tcp_response().unwrap();
-        assert_eq!(resp.status, 0x00, "stream must dial on whichever tunnel it lands on");
+        assert_eq!(
+            resp.status, 0x00,
+            "stream must dial on whichever tunnel it lands on"
+        );
         streams.push(Arc::clone(&st));
         wait_for_len(&mgr, 3, Duration::from_secs(10), "while loading the set");
     }
-    assert!(mgr.snapshot().len() <= 3, "set must never exceed max_tunnels");
+    assert!(
+        mgr.snapshot().len() <= 3,
+        "set must never exceed max_tunnels"
+    );
     // All three tunnels carry streams (least-loaded routing).
     for s in mgr.snapshot() {
         let load = s.stats().streams_open;
-        assert!(load >= 1, "every tunnel should hold streams, tunnel {} has {load}",
-            s.session_id());
+        assert!(
+            load >= 1,
+            "every tunnel should hold streams, tunnel {} has {load}",
+            s.session_id()
+        );
     }
     // The server saw 3 distinct sessions.
     let mut server_sessions = std::collections::HashSet::new();
-    while let Ok(id) = sid_rx.try_recv() { server_sessions.insert(id); }
-    assert!(server_sessions.len() >= 3,
-        "server must see 3 separate tunnel sessions, saw {server_sessions:?}");
+    while let Ok(id) = sid_rx.try_recv() {
+        server_sessions.insert(id);
+    }
+    assert!(
+        server_sessions.len() >= 3,
+        "server must see 3 separate tunnel sessions, saw {server_sessions:?}"
+    );
 
     // 4) Concurrent bulk echo through every stream — integrity across all
     //    tunnels with obfs + scale-out combined.
@@ -214,19 +269,29 @@ fn tunnels_scale_out_under_stream_pressure_and_back_in() {
             assert_eq!(got, payload, "echo mismatch on stream {i}");
         }));
     }
-    for h in handles { h.join().unwrap(); }
+    for h in handles {
+        h.join().unwrap();
+    }
 
     // 5) SCALE-IN: drop every stream; extra tunnels retire after their idle
     //    window; exactly one remains.
     streams.clear();
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
-        if mgr.snapshot().len() == 1 { break; }
-        assert!(Instant::now() < deadline,
-            "extra tunnels never scaled back in (live: {})", mgr.snapshot().len());
+        if mgr.snapshot().len() == 1 {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "extra tunnels never scaled back in (live: {})",
+            mgr.snapshot().len()
+        );
         thread::sleep(Duration::from_millis(100));
     }
-    log::info!("tunnel scale-in verified ({} elapsed)", t0.elapsed().as_secs_f32());
+    log::info!(
+        "tunnel scale-in verified ({} elapsed)",
+        t0.elapsed().as_secs_f32()
+    );
 
     // 6) The remaining tunnel still works after the whole exercise.
     let s = mgr.least_loaded().unwrap();
@@ -267,10 +332,13 @@ fn manager_reconnects_after_server_restart() {
     });
 
     // (a) First tunnel works.
-    let (s, st) = mgr.open_stream(Duration::from_secs(5)).expect("first tunnel");
+    let (s, st) = mgr
+        .open_stream(Duration::from_secs(5))
+        .expect("first tunnel");
     st.open_tcp(1, vec![127, 0, 0, 1], 80).unwrap();
     assert_eq!(st.wait_for_open_tcp_response().unwrap().status, 0x00);
-    drop(st); drop(s);
+    drop(st);
+    drop(s);
 
     // (b) Let the session outlive backoff_reset_after so the reconnect is
     //     immediate, then KILL server #1 (listener + sessions all drop).
@@ -280,7 +348,10 @@ fn manager_reconnects_after_server_restart() {
     // (c) The client notices the dead session.
     let deadline = Instant::now() + Duration::from_secs(10);
     while mgr.least_loaded().is_some() {
-        assert!(Instant::now() < deadline, "client never noticed the dead tunnel");
+        assert!(
+            Instant::now() < deadline,
+            "client never noticed the dead tunnel"
+        );
         thread::sleep(Duration::from_millis(20));
     }
 
@@ -308,8 +379,11 @@ fn manager_reconnects_after_server_restart() {
 
     // (e) Post-restart dial + echo round-trip succeeds.
     st.open_tcp(1, vec![127, 0, 0, 1], 80).unwrap();
-    assert_eq!(st.wait_for_open_tcp_response().unwrap().status, 0x00,
-        "post-restart dial must succeed");
+    assert_eq!(
+        st.wait_for_open_tcp_response().unwrap().status,
+        0x00,
+        "post-restart dial must succeed"
+    );
     let payload: Vec<u8> = (0..64 * 1024).map(|j| (j % 251) as u8).collect();
     st.write(&payload).unwrap();
     let mut got = Vec::with_capacity(payload.len());
@@ -336,9 +410,14 @@ fn free_port() -> SocketAddr {
 fn wait_for_len(mgr: &TunnelManager, want: usize, timeout: Duration, ctx: &str) {
     let deadline = Instant::now() + timeout;
     loop {
-        if mgr.snapshot().len() >= want { return; }
-        assert!(Instant::now() < deadline,
-            "tunnel set never reached {want} tunnels {ctx} (len={})", mgr.snapshot().len());
+        if mgr.snapshot().len() >= want {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "tunnel set never reached {want} tunnels {ctx} (len={})",
+            mgr.snapshot().len()
+        );
         thread::sleep(Duration::from_millis(20));
     }
 }

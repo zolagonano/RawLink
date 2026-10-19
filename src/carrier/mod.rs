@@ -2,8 +2,8 @@
 use crate::error::Error;
 pub mod sim;
 pub mod tcp;
-pub use sim::{SimCarrier, SimAddr, SimConfig, LossPattern, DelayPattern};
-pub use tcp::{TcpCarrier, TcpAddr, TcpListenerCarrier};
+pub use sim::{DelayPattern, LossPattern, SimAddr, SimCarrier, SimConfig};
+pub use tcp::{TcpAddr, TcpCarrier, TcpListenerCarrier};
 
 pub trait CarrierAddress: Clone + Send + Sync + 'static {}
 

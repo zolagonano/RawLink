@@ -21,8 +21,8 @@
 use crate::session::Stream;
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpStream};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
@@ -59,20 +59,32 @@ pub fn run(local: TcpStream, stream: Arc<Stream>, alive: Arc<AtomicBool>) {
     // app → stream pump (own thread).
     let pump_stream = Arc::clone(&stream);
     let pump_alive = Arc::clone(&alive);
-    let spawned = thread::Builder::new().name("rl-pump-app".into()).spawn(move || {
-        let mut buf = [0u8; CHUNK];
-        loop {
-            if !pump_alive.load(Ordering::Relaxed) { break; }
-            match local_read.read(&mut buf) {
-                Ok(0) => break, // app closed its write side → our FIN
-                Ok(n) => { if pump_stream.write(&buf[..n]).is_err() { break; } }
-                Err(e) if e.kind() == std::io::ErrorKind::TimedOut
-                      || e.kind() == std::io::ErrorKind::WouldBlock => continue,
-                Err(_) => break,
+    let spawned = thread::Builder::new()
+        .name("rl-pump-app".into())
+        .spawn(move || {
+            let mut buf = [0u8; CHUNK];
+            loop {
+                if !pump_alive.load(Ordering::Relaxed) {
+                    break;
+                }
+                match local_read.read(&mut buf) {
+                    Ok(0) => break, // app closed its write side → our FIN
+                    Ok(n) => {
+                        if pump_stream.write(&buf[..n]).is_err() {
+                            break;
+                        }
+                    }
+                    Err(e)
+                        if e.kind() == std::io::ErrorKind::TimedOut
+                            || e.kind() == std::io::ErrorKind::WouldBlock =>
+                    {
+                        continue;
+                    }
+                    Err(_) => break,
+                }
             }
-        }
-        let _ = pump_stream.close();
-    });
+            let _ = pump_stream.close();
+        });
 
     if let Err(e) = &spawned {
         // Could not start the app→stream pump — the bridge cannot work.
@@ -85,12 +97,19 @@ pub fn run(local: TcpStream, stream: Arc<Stream>, alive: Arc<AtomicBool>) {
     let mut wrote_all: u64 = 0;
     let mut peer_fin = false;
     loop {
-        if !alive.load(Ordering::Relaxed) { break; }
+        if !alive.load(Ordering::Relaxed) {
+            break;
+        }
         match stream.read() {
-            Ok(b) if b.is_empty() => { peer_fin = true; break; }
+            Ok(b) if b.is_empty() => {
+                peer_fin = true;
+                break;
+            }
             Ok(b) => {
                 wrote_all += b.len() as u64;
-                if local_write.write_all(&b).is_err() { break; }
+                if local_write.write_all(&b).is_err() {
+                    break;
+                }
                 let _ = local_write.flush();
             }
             Err(_) => break, // reset or session closed

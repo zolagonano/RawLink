@@ -53,7 +53,7 @@
 //!   theater and is closed by the uniform admission delay.
 
 use crate::error::Error;
-use crate::obfs::{self, DirectionKeys, ObfsConfig, ObfReadHalf, ObfWriteHalf};
+use crate::obfs::{self, DirectionKeys, ObfReadHalf, ObfWriteHalf, ObfsConfig};
 use hkdf::Hkdf;
 use hmac::{Hmac, Mac};
 use rand::RngCore;
@@ -113,13 +113,19 @@ impl SshObfsConfig {
     pub fn validate(&self) -> Result<(), Error> {
         let b = self.banner.as_bytes();
         if b.len() < 8 + 1 || b.len() + 2 > MAX_BANNER_BYTES {
-            return Err(Error::Malformed("obfs-ssh: banner length out of range".into()));
+            return Err(Error::Malformed(
+                "obfs-ssh: banner length out of range".into(),
+            ));
         }
         if !self.banner.starts_with("SSH-2.0-") {
-            return Err(Error::Malformed("obfs-ssh: banner must start with 'SSH-2.0-'".into()));
+            return Err(Error::Malformed(
+                "obfs-ssh: banner must start with 'SSH-2.0-'".into(),
+            ));
         }
         if !b.iter().all(|&c| (0x21..=0x7e).contains(&c) || c == b' ') {
-            return Err(Error::Malformed("obfs-ssh: banner must be printable ASCII".into()));
+            return Err(Error::Malformed(
+                "obfs-ssh: banner must be printable ASCII".into(),
+            ));
         }
         if self.padding_max as usize > 127 {
             return Err(Error::Malformed("obfs-ssh: padding_max > 127".into()));
@@ -168,20 +174,29 @@ fn expand(prk: &[u8; 32], label: &[u8], len: usize) -> Vec<u8> {
 /// public-key field — both fresh per connection, so a replayed handshake
 /// (same `q_c`) still derives different keys because the server's `f` is
 /// never replayed.
-fn derive_stream_keys(prk: &[u8; 32], q_c: &[u8; 32], f: &[u8; 32])
-    -> (DirectionKeys, DirectionKeys)
-{
+fn derive_stream_keys(
+    prk: &[u8; 32],
+    q_c: &[u8; 32],
+    f: &[u8; 32],
+) -> (DirectionKeys, DirectionKeys) {
     let mut mac = <HmacSha256 as Mac>::new_from_slice(prk).expect("hmac");
     mac.update(b"rawlink-obfs-ssh-v1/ks");
     mac.update(q_c);
     mac.update(f);
     let mut kp = [0u8; 32];
     kp.copy_from_slice(&mac.finalize().into_bytes());
-    let mut ck = [0u8; 32]; ck.copy_from_slice(&expand(&kp, b"rawlink-obfs-ssh-v1 c2s key", 32));
-    let mut cn = [0u8; 24]; cn.copy_from_slice(&expand(&kp, b"rawlink-obfs-ssh-v1 c2s nonce", 24));
-    let mut sk = [0u8; 32]; sk.copy_from_slice(&expand(&kp, b"rawlink-obfs-ssh-v1 s2c key", 32));
-    let mut sn = [0u8; 24]; sn.copy_from_slice(&expand(&kp, b"rawlink-obfs-ssh-v1 s2c nonce", 24));
-    (DirectionKeys { key: ck, nonce: cn }, DirectionKeys { key: sk, nonce: sn })
+    let mut ck = [0u8; 32];
+    ck.copy_from_slice(&expand(&kp, b"rawlink-obfs-ssh-v1 c2s key", 32));
+    let mut cn = [0u8; 24];
+    cn.copy_from_slice(&expand(&kp, b"rawlink-obfs-ssh-v1 c2s nonce", 24));
+    let mut sk = [0u8; 32];
+    sk.copy_from_slice(&expand(&kp, b"rawlink-obfs-ssh-v1 s2c key", 32));
+    let mut sn = [0u8; 24];
+    sn.copy_from_slice(&expand(&kp, b"rawlink-obfs-ssh-v1 s2c nonce", 24));
+    (
+        DirectionKeys { key: ck, nonce: cn },
+        DirectionKeys { key: sk, nonce: sn },
+    )
 }
 
 /// The "host key" the server presents in DH_REPLY: 32 bytes derived
@@ -266,7 +281,7 @@ fn kexinit_payload(is_client: bool) -> Vec<u8> {
     push_name_list(&mut p, compress);
     push_name_list(&mut p, ""); // languages c2s
     push_name_list(&mut p, ""); // languages s2c
-    p.push(0);                  // first_kex_packet_follows = false
+    p.push(0); // first_kex_packet_follows = false
     p.extend_from_slice(&0u32.to_be_bytes()); // reserved
     p
 }
@@ -277,8 +292,12 @@ fn kexinit_payload(is_client: bool) -> Vec<u8> {
 fn wrap_packet(payload: &[u8]) -> Vec<u8> {
     let body = 1 + payload.len();
     let mut pad = SSH_BLOCK - ((4 + body) % SSH_BLOCK);
-    if pad < MIN_PAD { pad += SSH_BLOCK; }
-    while 4 + body + pad < 16 { pad += SSH_BLOCK; }
+    if pad < MIN_PAD {
+        pad += SSH_BLOCK;
+    }
+    while 4 + body + pad < 16 {
+        pad += SSH_BLOCK;
+    }
     debug_assert!((MIN_PAD..=255).contains(&pad));
     let plen = (body + pad) as u32;
     let mut out = Vec::with_capacity(4 + body + pad);
@@ -344,7 +363,13 @@ fn newkeys_packet() -> Vec<u8> {
 // ---------------------------------------------------------------------------
 
 fn io_err(op: &'static str) -> impl Fn(std::io::Error) -> Error {
-    move |e| Error::Carrier(crate::error::CarrierError::new("obfs-ssh", op, format!("{e}")))
+    move |e| {
+        Error::Carrier(crate::error::CarrierError::new(
+            "obfs-ssh",
+            op,
+            format!("{e}"),
+        ))
+    }
 }
 
 /// Read one identification line. Accepts SSH-2.0- and SSH-1.99- prefixed
@@ -357,10 +382,11 @@ fn read_banner(stream: &mut TcpStream) -> Result<(), Error> {
         stream.read_exact(&mut b).map_err(io_err("read banner"))?;
         if b[0] == b'\n' {
             let t = line.strip_suffix(b"\r").unwrap_or(&line);
-            let ok = (t.starts_with(b"SSH-2.0-") || t.starts_with(b"SSH-1.99-"))
-                && !t.is_empty();
+            let ok = (t.starts_with(b"SSH-2.0-") || t.starts_with(b"SSH-1.99-")) && !t.is_empty();
             if !ok {
-                return Err(Error::Auth("obfs-ssh: bad peer identification string".into()));
+                return Err(Error::Auth(
+                    "obfs-ssh: bad peer identification string".into(),
+                ));
             }
             return Ok(());
         }
@@ -376,13 +402,17 @@ fn read_banner(stream: &mut TcpStream) -> Result<(), Error> {
 /// padding, positive length).
 fn read_packet(stream: &mut TcpStream) -> Result<Vec<u8>, Error> {
     let mut lhdr = [0u8; 4];
-    stream.read_exact(&mut lhdr).map_err(io_err("read pkt len"))?;
+    stream
+        .read_exact(&mut lhdr)
+        .map_err(io_err("read pkt len"))?;
     let plen = u32::from_be_bytes(lhdr) as usize;
     if !(1 + MIN_PAD..=MAX_PACKET_BYTES).contains(&plen) {
         return Err(Error::Malformed("obfs-ssh: bad packet length".into()));
     }
     let mut body = vec![0u8; plen];
-    stream.read_exact(&mut body).map_err(io_err("read pkt body"))?;
+    stream
+        .read_exact(&mut body)
+        .map_err(io_err("read pkt body"))?;
     let padlen = body[0] as usize;
     if padlen < MIN_PAD || 1 + padlen > plen {
         return Err(Error::Malformed("obfs-ssh: bad padding length".into()));
@@ -397,7 +427,9 @@ fn read_packet(stream: &mut TcpStream) -> Result<Vec<u8>, Error> {
 fn expect_msg_type(payload: &[u8], want: u8, what: &'static str) -> Result<(), Error> {
     if payload[0] != want {
         return Err(Error::Malformed(format!(
-            "obfs-ssh: expected msg type {want} ({what}), got {}", payload[0])));
+            "obfs-ssh: expected msg type {want} ({what}), got {}",
+            payload[0]
+        )));
     }
     Ok(())
 }
@@ -410,7 +442,9 @@ fn parse_dh_init(p: &[u8]) -> Result<[u8; 32], Error> {
     }
     let ql = u32::from_be_bytes(p[1..5].try_into().unwrap()) as usize;
     if ql != 32 {
-        return Err(Error::Malformed("obfs-ssh: DH_INIT q_c length != 32".into()));
+        return Err(Error::Malformed(
+            "obfs-ssh: DH_INIT q_c length != 32".into(),
+        ));
     }
     Ok(p[5..37].try_into().unwrap())
 }
@@ -424,7 +458,9 @@ fn parse_dh_reply(p: &[u8]) -> Result<[u8; 32], Error> {
         }
         let l = u32::from_be_bytes(p[off..off + 4].try_into().unwrap()) as usize;
         if l == 0 || off + 4 + l > p.len() {
-            return Err(Error::Malformed("obfs-ssh: DH_REPLY bad string length".into()));
+            return Err(Error::Malformed(
+                "obfs-ssh: DH_REPLY bad string length".into(),
+            ));
         }
         Ok((off + 4 + l, p[off + 4..off + 4 + l].to_vec()))
     };
@@ -464,27 +500,39 @@ fn close_quietly(stream: &mut TcpStream) {
 /// and, when `early` is given, the RawLink hello packet as the first
 /// post-NEWKEYS "encrypted" frame. Returns the rand-mode codec halves
 /// keyed by the handshake randoms.
-pub fn client_handshake(mut stream: TcpStream, psk: &[u8; 32], cfg: &SshObfsConfig,
-                        early: Option<&[u8]>)
-    -> Result<(ObfReadHalf, ObfWriteHalf), Error>
-{
+pub fn client_handshake(
+    mut stream: TcpStream,
+    psk: &[u8; 32],
+    cfg: &SshObfsConfig,
+    early: Option<&[u8]>,
+) -> Result<(ObfReadHalf, ObfWriteHalf), Error> {
     cfg.validate()?;
-    stream.set_read_timeout(Some(HANDSHAKE_TIMEOUT)).map_err(io_err("set hs rtimeout"))?;
-    stream.set_write_timeout(Some(HANDSHAKE_TIMEOUT)).map_err(io_err("set hs wtimeout"))?;
+    stream
+        .set_read_timeout(Some(HANDSHAKE_TIMEOUT))
+        .map_err(io_err("set hs rtimeout"))?;
+    stream
+        .set_write_timeout(Some(HANDSHAKE_TIMEOUT))
+        .map_err(io_err("set hs wtimeout"))?;
 
     // Flight 1: identification string (immediately on connect).
-    stream.write_all(&banner_line(cfg)).map_err(io_err("send banner"))?;
+    stream
+        .write_all(&banner_line(cfg))
+        .map_err(io_err("send banner"))?;
     read_banner(&mut stream)?;
 
     // Flight 2: KEXINIT.
-    stream.write_all(&wrap_packet(&kexinit_payload(true))).map_err(io_err("send kexinit"))?;
+    stream
+        .write_all(&wrap_packet(&kexinit_payload(true)))
+        .map_err(io_err("send kexinit"))?;
     let p = read_packet(&mut stream)?;
     expect_msg_type(&p, MSG_KEXINIT, "KEXINIT")?;
 
     // Flight 3: curve25519 DH_INIT with our fresh random.
     let mut q_c = [0u8; 32];
     rand::rng().fill_bytes(&mut q_c);
-    stream.write_all(&wrap_packet(&dh_init_payload(&q_c))).map_err(io_err("send dh_init"))?;
+    stream
+        .write_all(&wrap_packet(&dh_init_payload(&q_c)))
+        .map_err(io_err("send dh_init"))?;
 
     // Flight 4: DH_REPLY carries the server's fresh random.
     let p = read_packet(&mut stream)?;
@@ -497,14 +545,24 @@ pub fn client_handshake(mut stream: TcpStream, psk: &[u8; 32], cfg: &SshObfsConf
     // "encrypted" frame, riding the same flight.
     let prk = ssh_prk(psk);
     let (c2s, s2c) = derive_stream_keys(&prk, &q_c, &f);
-    stream.write_all(&newkeys_packet()).map_err(io_err("send newkeys"))?;
+    stream
+        .write_all(&newkeys_packet())
+        .map_err(io_err("send newkeys"))?;
     let (read, mut write) = obfs::build_halves(stream, &inner_cfg(cfg), c2s, s2c, true)?;
     if let Some(e) = early {
         if e.len() >= crate::config::HEADER_LEN {
-            write.write_frame2(&e[..crate::config::HEADER_LEN],
-                               &e[crate::config::HEADER_LEN..])
-                .map_err(|e| Error::Carrier(crate::error::CarrierError::new(
-                    "obfs-ssh", "early data", format!("{e}"))))?;
+            write
+                .write_frame2(
+                    &e[..crate::config::HEADER_LEN],
+                    &e[crate::config::HEADER_LEN..],
+                )
+                .map_err(|e| {
+                    Error::Carrier(crate::error::CarrierError::new(
+                        "obfs-ssh",
+                        "early data",
+                        format!("{e}"),
+                    ))
+                })?;
         }
     }
     Ok((read, write))
@@ -516,19 +574,27 @@ pub fn client_handshake(mut stream: TcpStream, psk: &[u8; 32], cfg: &SshObfsConf
 /// the connection to the data-phase codec. Early data (the RawLink
 /// hello) is NOT consumed here — it flows through the codec into the
 /// carrier read path.
-pub fn server_handshake(mut stream: TcpStream, psk: &[u8; 32], cfg: &SshObfsConfig)
-    -> Result<(ObfReadHalf, ObfWriteHalf), Error>
-{
+pub fn server_handshake(
+    mut stream: TcpStream,
+    psk: &[u8; 32],
+    cfg: &SshObfsConfig,
+) -> Result<(ObfReadHalf, ObfWriteHalf), Error> {
     cfg.validate()?;
-    stream.set_read_timeout(Some(HANDSHAKE_TIMEOUT)).map_err(io_err("set hs rtimeout"))?;
-    stream.set_write_timeout(Some(HANDSHAKE_TIMEOUT)).map_err(io_err("set hs wtimeout"))?;
+    stream
+        .set_read_timeout(Some(HANDSHAKE_TIMEOUT))
+        .map_err(io_err("set hs rtimeout"))?;
+    stream
+        .set_write_timeout(Some(HANDSHAKE_TIMEOUT))
+        .map_err(io_err("set hs wtimeout"))?;
 
     // sshd-style: our identification + KEXINIT go out before ANY client
     // bytes are read, coalesced in one write (a scanner that connects and
     // only listens sees an ordinary OpenSSH server).
     let mut flight = banner_line(cfg);
     flight.extend_from_slice(&wrap_packet(&kexinit_payload(false)));
-    stream.write_all(&flight).map_err(io_err("send banner+kexinit"))?;
+    stream
+        .write_all(&flight)
+        .map_err(io_err("send banner+kexinit"))?;
 
     // Identification line; garbage gets sshd's quiet close.
     if let Err(e) = read_banner(&mut stream) {
@@ -537,7 +603,10 @@ pub fn server_handshake(mut stream: TcpStream, psk: &[u8; 32], cfg: &SshObfsConf
     }
     let p = match read_packet(&mut stream) {
         Ok(p) => p,
-        Err(e) => { close_quietly(&mut stream); return Err(e); }
+        Err(e) => {
+            close_quietly(&mut stream);
+            return Err(e);
+        }
     };
     if let Err(e) = expect_msg_type(&p, MSG_KEXINIT, "KEXINIT") {
         close_quietly(&mut stream);
@@ -547,11 +616,17 @@ pub fn server_handshake(mut stream: TcpStream, psk: &[u8; 32], cfg: &SshObfsConf
     // DH_INIT: the client's fresh random.
     let p = match read_packet(&mut stream) {
         Ok(p) => p,
-        Err(e) => { close_quietly(&mut stream); return Err(e); }
+        Err(e) => {
+            close_quietly(&mut stream);
+            return Err(e);
+        }
     };
     let q_c = match parse_dh_init(&p) {
         Ok(q) => q,
-        Err(e) => { close_quietly(&mut stream); return Err(e); }
+        Err(e) => {
+            close_quietly(&mut stream);
+            return Err(e);
+        }
     };
 
     // DH_REPLY + NEWKEYS leave together (typical sshd coalescing).
@@ -562,7 +637,9 @@ pub fn server_handshake(mut stream: TcpStream, psk: &[u8; 32], cfg: &SshObfsConf
     let mut flight = Vec::with_capacity(192 + 16);
     flight.extend_from_slice(&wrap_packet(&dh_reply_payload(&prk, &q_c, &f)));
     flight.extend_from_slice(&newkeys_packet());
-    stream.write_all(&flight).map_err(io_err("send dh_reply+newkeys"))?;
+    stream
+        .write_all(&flight)
+        .map_err(io_err("send dh_reply+newkeys"))?;
 
     // Client NEWKEYS — after this, everything is the encrypted data phase.
     let p = read_packet(&mut stream)?;
@@ -603,12 +680,19 @@ mod tests {
         assert_eq!(wrap_packet(&dh_init_payload(&[7u8; 32])).len(), 48);
         assert_eq!(newkeys_packet().len(), 16);
         let prk = ssh_prk(&[9u8; 32]);
-        assert_eq!(wrap_packet(&dh_reply_payload(&prk, &[1u8; 32], &[2u8; 32])).len(), 192);
+        assert_eq!(
+            wrap_packet(&dh_reply_payload(&prk, &[1u8; 32], &[2u8; 32])).len(),
+            192
+        );
         // KEXINIT lands in the real size class (~1.3-1.6 KiB).
         let k = wrap_packet(&kexinit_payload(true));
         assert!(k.len() > 1100 && k.len() < 1700, "kexinit size {}", k.len());
         let ks = wrap_packet(&kexinit_payload(false));
-        assert!(ks.len() > 600 && ks.len() < 1100, "server kexinit size {}", ks.len());
+        assert!(
+            ks.len() > 600 && ks.len() < 1100,
+            "server kexinit size {}",
+            ks.len()
+        );
     }
 
     #[test]
@@ -641,7 +725,10 @@ mod tests {
         let (a_c2s, _) = derive_stream_keys(&prk, &[1u8; 32], &[2u8; 32]);
         let (b_c2s, _) = derive_stream_keys(&prk, &[1u8; 32], &[3u8; 32]);
         let (c_c2s, _) = derive_stream_keys(&prk, &[9u8; 32], &[2u8; 32]);
-        assert_ne!(a_c2s.key, b_c2s.key, "server random must change keys (replay defense)");
+        assert_ne!(
+            a_c2s.key, b_c2s.key,
+            "server random must change keys (replay defense)"
+        );
         assert_ne!(a_c2s.key, c_c2s.key, "client random must change keys");
     }
 }

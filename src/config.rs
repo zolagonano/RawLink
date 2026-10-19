@@ -29,7 +29,11 @@ impl TransportMode {
     /// side always accepts up to MAX_FRAMES_PER_PACKET regardless of the
     /// local mode (see session::MAX_FRAMES_PER_PACKET).
     pub fn max_frames_per_packet(self) -> usize {
-        match self { Self::LowLatency => 8, Self::Balanced => 64, Self::Throughput => 256 }
+        match self {
+            Self::LowLatency => 8,
+            Self::Balanced => 64,
+            Self::Throughput => 256,
+        }
     }
 }
 
@@ -44,38 +48,55 @@ pub struct WindowConfig {
 }
 impl Default for WindowConfig {
     fn default() -> Self {
-        Self { stream_send_window: 4 << 20 }
+        Self {
+            stream_send_window: 4 << 20,
+        }
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct Config {
-    pub mtu: usize, pub mss: usize,
+    pub mtu: usize,
+    pub mss: usize,
     pub max_streams_per_session: u32,
     pub mode: TransportMode,
     pub windows: WindowConfig,
 }
 impl Default for Config {
     fn default() -> Self {
-        Self { mtu: DEFAULT_MTU, mss: DEFAULT_MSS, max_streams_per_session: 256,
+        Self {
+            mtu: DEFAULT_MTU,
+            mss: DEFAULT_MSS,
+            max_streams_per_session: 256,
             mode: TransportMode::default(),
-            windows: WindowConfig::default() }
+            windows: WindowConfig::default(),
+        }
     }
 }
 impl Config {
-    pub fn payload_capacity(&self) -> usize { self.mtu - HEADER_LEN - AEAD_TAG_LEN }
+    pub fn payload_capacity(&self) -> usize {
+        self.mtu - HEADER_LEN - AEAD_TAG_LEN
+    }
     pub fn validate(&self) -> Result<(), crate::Error> {
-        if self.mtu < MIN_MTU { return Err(crate::Error::Malformed("mtu too small".into())); }
+        if self.mtu < MIN_MTU {
+            return Err(crate::Error::Malformed("mtu too small".into()));
+        }
         // The packet builder sizes DATA chunks against the carrier MTU, but
         // `mss` is used as a per-frame sizing hint; a nonsensical mss (0, or
         // larger than what fits in one packet) would produce packets the
         // carrier refuses to send.
-        if self.mss == 0 { return Err(crate::Error::Malformed("mss must be > 0".into())); }
+        if self.mss == 0 {
+            return Err(crate::Error::Malformed("mss must be > 0".into()));
+        }
         if self.mss > self.mtu.saturating_sub(HEADER_LEN + AEAD_TAG_LEN) {
-            return Err(crate::Error::Malformed("mss larger than packet payload capacity".into()));
+            return Err(crate::Error::Malformed(
+                "mss larger than packet payload capacity".into(),
+            ));
         }
         if self.max_streams_per_session == 0 {
-            return Err(crate::Error::Malformed("max_streams_per_session must be > 0".into()));
+            return Err(crate::Error::Malformed(
+                "max_streams_per_session must be > 0".into(),
+            ));
         }
         Ok(())
     }

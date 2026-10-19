@@ -18,22 +18,35 @@ const PSK: [u8; 32] = [0x5A; 32];
 static LOG_INIT: std::sync::Once = std::sync::Once::new();
 fn init_log() {
     LOG_INIT.call_once(|| {
-        let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("debug"))
-            .format_timestamp_millis().try_init();
+        let _ =
+            env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("debug"))
+                .format_timestamp_millis()
+                .try_init();
     });
 }
 
 fn obfs_cfg() -> ObfsConfig {
-    ObfsConfig { padding_max: 48, dummy_min_ms: 60, dummy_max_ms: 120, dummy_size_max: 512 }
+    ObfsConfig {
+        padding_max: 48,
+        dummy_min_ms: 60,
+        dummy_max_ms: 120,
+        dummy_size_max: 512,
+    }
 }
 
 fn spawn_echoer(stream: rawlink::session::Stream) {
     // Echo everything back until FIN/reset/session death.
-    thread::spawn(move || loop {
-        match stream.read() {
-            Ok(b) if b.is_empty() => break,             // peer FIN
-            Ok(b) => { if stream.write(&b).is_err() { break; } }
-            Err(_) => break,
+    thread::spawn(move || {
+        loop {
+            match stream.read() {
+                Ok(b) if b.is_empty() => break, // peer FIN
+                Ok(b) => {
+                    if stream.write(&b).is_err() {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
         }
     });
 }
@@ -54,7 +67,9 @@ fn server_echo_worker(listener: TcpListenerCarrier, sid_rx: mpsc::Receiver<Sessi
             }
             Err(e) => {
                 let msg = format!("{e}");
-                if msg.contains("closed") { return; }
+                if msg.contains("closed") {
+                    return;
+                }
                 thread::sleep(Duration::from_millis(5));
             }
         }
@@ -81,9 +96,18 @@ fn obfs_session_e2e_echo_4mb() {
     let server = thread::spawn(move || server_echo_worker(listener, sid_rx));
 
     let sid = SessionId::generate();
-    let carrier = TcpCarrier::connect_obfs(addr, &PSK, sid.as_bytes(), &rawlink::ObfsMode::Rand(obfs_cfg())).unwrap();
-    let session = Session::connect_pre_shared_with_sid(carrier, PSK, Config::default(), sid).unwrap();
-    sid_tx.send(SessionId::from_u64(session.session_id())).unwrap();
+    let carrier = TcpCarrier::connect_obfs(
+        addr,
+        &PSK,
+        sid.as_bytes(),
+        &rawlink::ObfsMode::Rand(obfs_cfg()),
+    )
+    .unwrap();
+    let session =
+        Session::connect_pre_shared_with_sid(carrier, PSK, Config::default(), sid).unwrap();
+    sid_tx
+        .send(SessionId::from_u64(session.session_id()))
+        .unwrap();
 
     let st = session.open_stream().unwrap();
     st.open_tcp(1, vec![127, 0, 0, 1], 80).unwrap();
@@ -114,7 +138,10 @@ fn obfs_session_e2e_echo_4mb() {
     // Idle-cover check: no user traffic beyond a few dummy intervals —
     // the session must stay alive and aligned.
     thread::sleep(Duration::from_millis(500));
-    assert!(session.is_alive(), "session must survive idle period with dummy traffic");
+    assert!(
+        session.is_alive(),
+        "session must survive idle period with dummy traffic"
+    );
 
     // Drop client-side handles FIRST so the server sees the session die
     // (a join before drop would deadlock until the server's 60s deadline).
@@ -136,12 +163,27 @@ fn obfs_session_survives_idle_with_dummies() {
         session.is_alive()
     });
     let sid = SessionId::generate();
-    let carrier = TcpCarrier::connect_obfs(addr, &PSK, sid.as_bytes(), &rawlink::ObfsMode::Rand(obfs_cfg())).unwrap();
-    let session = Session::connect_pre_shared_with_sid(carrier, PSK, Config::default(), sid).unwrap();
-    sid_tx.send(SessionId::from_u64(session.session_id())).unwrap();
+    let carrier = TcpCarrier::connect_obfs(
+        addr,
+        &PSK,
+        sid.as_bytes(),
+        &rawlink::ObfsMode::Rand(obfs_cfg()),
+    )
+    .unwrap();
+    let session =
+        Session::connect_pre_shared_with_sid(carrier, PSK, Config::default(), sid).unwrap();
+    sid_tx
+        .send(SessionId::from_u64(session.session_id()))
+        .unwrap();
     thread::sleep(Duration::from_secs(2));
-    assert!(session.is_alive(), "client session must survive 2s idle with dummies");
-    assert!(server.join().unwrap(), "server session must survive 2s idle with dummies");
+    assert!(
+        session.is_alive(),
+        "client session must survive 2s idle with dummies"
+    );
+    assert!(
+        server.join().unwrap(),
+        "server session must survive 2s idle with dummies"
+    );
     drop(session);
 }
 
@@ -153,14 +195,14 @@ fn obfs_client_to_plain_server_fails_fast() {
         let carrier = listener.accept().unwrap();
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
-            if Instant::now() >= deadline { return "admission-timeout"; }
+            if Instant::now() >= deadline {
+                return "admission-timeout";
+            }
             match carrier.recv() {
-                Ok(Some(b)) => {
-                    match rawlink::session::verify_psk(&b.1, PSK) {
-                        Ok(_) => return "authenticated (BAD: obfs leaked?)",
-                        Err(_) => return "rejected-garbage",
-                    }
-                }
+                Ok(Some(b)) => match rawlink::session::verify_psk(&b.1, PSK) {
+                    Ok(_) => return "authenticated (BAD: obfs leaked?)",
+                    Err(_) => return "rejected-garbage",
+                },
                 Ok(None) => thread::sleep(Duration::from_millis(2)),
                 Err(_) => return "carrier-error",
             }
@@ -171,7 +213,12 @@ fn obfs_client_to_plain_server_fails_fast() {
     // practice it fails as soon as the server gives up or resets).
     let started = Instant::now();
     let sid2 = SessionId::generate();
-    let outcome = TcpCarrier::connect_obfs(addr, &PSK, sid2.as_bytes(), &rawlink::ObfsMode::Rand(obfs_cfg()));
+    let outcome = TcpCarrier::connect_obfs(
+        addr,
+        &PSK,
+        sid2.as_bytes(),
+        &rawlink::ObfsMode::Rand(obfs_cfg()),
+    );
     match outcome {
         Err(_) => { /* handshake-level rejection — expected */ }
         Ok(_carrier) => {
@@ -180,7 +227,10 @@ fn obfs_client_to_plain_server_fails_fast() {
             panic!("obfs handshake must not succeed against a plain server");
         }
     }
-    assert!(started.elapsed() < Duration::from_secs(15), "failure must be bounded");
+    assert!(
+        started.elapsed() < Duration::from_secs(15),
+        "failure must be bounded"
+    );
     let verdict = server.join().unwrap();
     assert_ne!(verdict, "authenticated (BAD: obfs leaked?)");
 }
@@ -205,10 +255,16 @@ fn plain_client_to_obfs_server_gets_probe_response() {
             while s.is_alive() && Instant::now() < deadline {
                 thread::sleep(Duration::from_millis(10));
             }
-            assert!(!s.is_alive(), "plain client must not establish against obfs server");
+            assert!(
+                !s.is_alive(),
+                "plain client must not establish against obfs server"
+            );
         }
     }
-    assert!(server.join().unwrap(), "obfs server must reject the plain client");
+    assert!(
+        server.join().unwrap(),
+        "obfs server must reject the plain client"
+    );
 }
 
 #[test]
@@ -219,8 +275,11 @@ fn plain_session_still_works_regression() {
     let server = thread::spawn(move || server_echo_worker(listener, sid_rx));
     let sid = SessionId::generate();
     let carrier = TcpCarrier::connect(addr, &PSK, sid.as_bytes()).unwrap();
-    let session = Session::connect_pre_shared_with_sid(carrier, PSK, Config::default(), sid).unwrap();
-    sid_tx.send(SessionId::from_u64(session.session_id())).unwrap();
+    let session =
+        Session::connect_pre_shared_with_sid(carrier, PSK, Config::default(), sid).unwrap();
+    sid_tx
+        .send(SessionId::from_u64(session.session_id()))
+        .unwrap();
 
     let st = session.open_stream().unwrap();
     st.open_tcp(1, vec![127, 0, 0, 1], 80).unwrap();
@@ -230,7 +289,9 @@ fn plain_session_still_works_regression() {
     let mut got = Vec::new();
     let deadline = Instant::now() + Duration::from_secs(10);
     while got.len() < 21 {
-        if Instant::now() > deadline { panic!("plain echo timeout"); }
+        if Instant::now() > deadline {
+            panic!("plain echo timeout");
+        }
         match st.read() {
             Ok(b) if b.is_empty() => panic!("unexpected FIN"),
             Ok(b) => got.extend_from_slice(&b),
@@ -258,23 +319,29 @@ fn ssh_mimicry_session_e2e_echo() {
     let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = l.local_addr().unwrap();
     drop(l);
-    let listener = TcpListenerCarrier::bind_obfs(
-        addr, &PSK, &rawlink::ObfsMode::Ssh(ssh_cfg()),
-    ).unwrap();
+    let listener =
+        TcpListenerCarrier::bind_obfs(addr, &PSK, &rawlink::ObfsMode::Ssh(ssh_cfg())).unwrap();
     let (sid_tx, sid_rx) = mpsc::channel();
     let _server = thread::spawn(move || server_echo_worker(listener, sid_rx));
 
     // SSH client with post-NEWKEYS early data: the RawLink hello is the
     // first "encrypted" packet after the emulated KEX.
     let (sid, early) = rawlink::session::build_first_packet(&PSK).unwrap();
-    let carrier = TcpCarrier::connect_obfs_ssh_early(addr, &PSK, &ssh_cfg(), &early, sid.as_bytes()).unwrap();
-    let session = Session::connect_pre_shared_preamble(carrier, PSK, Config::default(), sid).unwrap();
-    sid_tx.send(SessionId::from_u64(session.session_id())).unwrap();
+    let carrier =
+        TcpCarrier::connect_obfs_ssh_early(addr, &PSK, &ssh_cfg(), &early, sid.as_bytes()).unwrap();
+    let session =
+        Session::connect_pre_shared_preamble(carrier, PSK, Config::default(), sid).unwrap();
+    sid_tx
+        .send(SessionId::from_u64(session.session_id()))
+        .unwrap();
 
     let st = session.open_stream().unwrap();
     st.open_tcp(1, vec![127, 0, 0, 1], 80).unwrap();
     let resp = st.wait_for_open_tcp_response().unwrap();
-    assert_eq!(resp.status, 0x00, "OPEN_TCP must succeed through the SSH layer");
+    assert_eq!(
+        resp.status, 0x00,
+        "OPEN_TCP must succeed through the SSH layer"
+    );
 
     // Echo 2 MiB through the emulated-SSH data phase, byte-exact.
     let chunk: Vec<u8> = (0..256 * 1024).map(|i| (i % 249) as u8).collect();
@@ -285,9 +352,13 @@ fn ssh_mimicry_session_e2e_echo() {
         let mut got = Vec::with_capacity(seq.len());
         let deadline = Instant::now() + Duration::from_secs(30);
         while got.len() < seq.len() {
-            if Instant::now() > deadline { panic!("timeout at round {round}"); }
+            if Instant::now() > deadline {
+                panic!("timeout at round {round}");
+            }
             match st.read() {
-                Ok(mut b) => { got.append(&mut b); }
+                Ok(mut b) => {
+                    got.append(&mut b);
+                }
                 Err(_) => thread::sleep(Duration::from_millis(2)),
             }
         }
@@ -302,7 +373,10 @@ fn ssh_mimicry_session_e2e_echo() {
 /// a DPI (or a real sshd) would check.
 fn ssh_next_packet(buf: &mut &[u8]) -> (u8, Vec<u8>) {
     let plen = u32::from_be_bytes(buf[..4].try_into().unwrap()) as usize;
-    assert!((5..=35000).contains(&plen), "packet_length {plen} out of range");
+    assert!(
+        (5..=35000).contains(&plen),
+        "packet_length {plen} out of range"
+    );
     assert_eq!((4 + plen) % 8, 0, "8-byte block alignment");
     let padlen = buf[4] as usize;
     assert!(padlen >= 4, "padding >= 4");
@@ -315,10 +389,16 @@ fn ssh_next_packet(buf: &mut &[u8]) -> (u8, Vec<u8>) {
 
 fn shannon_entropy(b: &[u8]) -> f64 {
     let mut freq = [0usize; 256];
-    for &x in b { freq[x as usize] += 1; }
+    for &x in b {
+        freq[x as usize] += 1;
+    }
     let n = b.len() as f64;
-    freq.iter().filter(|&&f| f > 0)
-        .map(|&f| { let p = f as f64 / n; -p * p.log2() })
+    freq.iter()
+        .filter(|&&f| f > 0)
+        .map(|&f| {
+            let p = f as f64 / n;
+            -p * p.log2()
+        })
         .sum()
 }
 
@@ -334,9 +414,8 @@ fn ssh_mimicry_wire_looks_like_ssh() {
     let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = l.local_addr().unwrap();
     drop(l);
-    let listener = TcpListenerCarrier::bind_obfs(
-        addr, &PSK, &rawlink::ObfsMode::Ssh(ssh_cfg()),
-    ).unwrap();
+    let listener =
+        TcpListenerCarrier::bind_obfs(addr, &PSK, &rawlink::ObfsMode::Ssh(ssh_cfg())).unwrap();
     let (sid_tx, sid_rx) = mpsc::channel();
     let _server = thread::spawn(move || server_echo_worker(listener, sid_rx));
 
@@ -349,50 +428,59 @@ fn ssh_mimicry_wire_looks_like_ssh() {
         let c2s = c2s.clone();
         let s2c = s2c.clone();
         thread::spawn(move || {
-        let (c, _) = front.accept().unwrap();
-        let srv = std::net::TcpStream::connect(addr).unwrap();
-        let (mut cr, mut cw) = (c.try_clone().unwrap(), c);
-        let (mut sr, mut sw) = (srv.try_clone().unwrap(), srv);
-        let h1 = {
-            let c2s = c2s.clone();
-            thread::spawn(move || {
-                let mut buf = [0u8; 16384];
-                loop {
-                    match cr.read(&mut buf) {
-                        Ok(0) | Err(_) => break,
-                        Ok(n) => {
-                            c2s.lock().unwrap().extend_from_slice(&buf[..n]);
-                            if sw.write_all(&buf[..n]).is_err() { break; }
+            let (c, _) = front.accept().unwrap();
+            let srv = std::net::TcpStream::connect(addr).unwrap();
+            let (mut cr, mut cw) = (c.try_clone().unwrap(), c);
+            let (mut sr, mut sw) = (srv.try_clone().unwrap(), srv);
+            let h1 = {
+                let c2s = c2s.clone();
+                thread::spawn(move || {
+                    let mut buf = [0u8; 16384];
+                    loop {
+                        match cr.read(&mut buf) {
+                            Ok(0) | Err(_) => break,
+                            Ok(n) => {
+                                c2s.lock().unwrap().extend_from_slice(&buf[..n]);
+                                if sw.write_all(&buf[..n]).is_err() {
+                                    break;
+                                }
+                            }
                         }
                     }
-                }
-            })
-        };
-        let h2 = {
-            let s2c = s2c.clone();
-            thread::spawn(move || {
-                let mut buf = [0u8; 16384];
-                loop {
-                    match sr.read(&mut buf) {
-                        Ok(0) | Err(_) => break,
-                        Ok(n) => {
-                            s2c.lock().unwrap().extend_from_slice(&buf[..n]);
-                            if cw.write_all(&buf[..n]).is_err() { break; }
+                })
+            };
+            let h2 = {
+                let s2c = s2c.clone();
+                thread::spawn(move || {
+                    let mut buf = [0u8; 16384];
+                    loop {
+                        match sr.read(&mut buf) {
+                            Ok(0) | Err(_) => break,
+                            Ok(n) => {
+                                s2c.lock().unwrap().extend_from_slice(&buf[..n]);
+                                if cw.write_all(&buf[..n]).is_err() {
+                                    break;
+                                }
+                            }
                         }
                     }
-                }
-            })
-        };
-        let _ = h1.join();
-        let _ = h2.join();
+                })
+            };
+            let _ = h1.join();
+            let _ = h2.join();
         })
     };
 
     // Run a real session through the tee (with early data + bulk echo).
     let (sid, early) = rawlink::session::build_first_packet(&PSK).unwrap();
-    let carrier = TcpCarrier::connect_obfs_ssh_early(front_addr, &PSK, &ssh_cfg(), &early, sid.as_bytes()).unwrap();
-    let session = Session::connect_pre_shared_preamble(carrier, PSK, Config::default(), sid).unwrap();
-    sid_tx.send(SessionId::from_u64(session.session_id())).unwrap();
+    let carrier =
+        TcpCarrier::connect_obfs_ssh_early(front_addr, &PSK, &ssh_cfg(), &early, sid.as_bytes())
+            .unwrap();
+    let session =
+        Session::connect_pre_shared_preamble(carrier, PSK, Config::default(), sid).unwrap();
+    sid_tx
+        .send(SessionId::from_u64(session.session_id()))
+        .unwrap();
     let st = session.open_stream().unwrap();
     st.open_tcp(1, vec![127, 0, 0, 1], 80).unwrap();
     let _ = st.wait_for_open_tcp_response().unwrap();
@@ -402,8 +490,13 @@ fn ssh_mimicry_wire_looks_like_ssh() {
         let mut got = 0;
         let deadline = Instant::now() + Duration::from_secs(30);
         while got < payload.len() {
-            if Instant::now() > deadline { panic!("echo timeout"); }
-            match st.read() { Ok(b) => got += b.len(), Err(_) => thread::sleep(Duration::from_millis(2)) }
+            if Instant::now() > deadline {
+                panic!("echo timeout");
+            }
+            match st.read() {
+                Ok(b) => got += b.len(),
+                Err(_) => thread::sleep(Duration::from_millis(2)),
+            }
         }
     }
     drop(st);
@@ -412,9 +505,15 @@ fn ssh_mimicry_wire_looks_like_ssh() {
 
     // ---- Dissect the captured client->server stream. ----
     let c2s = c2s.lock().unwrap().clone();
-    let nl = c2s.windows(2).position(|w| w == b"\r\n").expect("banner CRLF");
+    let nl = c2s
+        .windows(2)
+        .position(|w| w == b"\r\n")
+        .expect("banner CRLF");
     let banner = std::str::from_utf8(&c2s[..nl]).unwrap();
-    assert!(banner.starts_with("SSH-2.0-OpenSSH"), "client banner: {banner}");
+    assert!(
+        banner.starts_with("SSH-2.0-OpenSSH"),
+        "client banner: {banner}"
+    );
     let mut buf = &c2s[nl + 2..];
     // KEXINIT
     let (msg, payload) = ssh_next_packet(&mut buf);
@@ -429,10 +528,16 @@ fn ssh_mimicry_wire_looks_like_ssh() {
             p = &p[4..];
             let list = std::str::from_utf8(&p[..l]).unwrap();
             p = &p[l..];
-            if i < 6 { assert!(!list.is_empty(), "name-list {i} must be non-empty"); }
+            if i < 6 {
+                assert!(!list.is_empty(), "name-list {i} must be non-empty");
+            }
             lists.push(list.to_string());
         }
-        assert!(lists[0].contains("curve25519-sha256"), "kex list: {}", lists[0]);
+        assert!(
+            lists[0].contains("curve25519-sha256"),
+            "kex list: {}",
+            lists[0]
+        );
         assert_eq!(p[0], 0, "first_kex_packet_follows = false");
         assert_eq!(&p[1..5], &[0, 0, 0, 0], "reserved = 0");
     }
@@ -451,26 +556,45 @@ fn ssh_mimicry_wire_looks_like_ssh() {
     assert_eq!(payload.len(), 1);
     // Post-NEWKEYS: encrypted SSH = uniform random. (The rand-mode codec
     // emits masked frames — XChaCha20 keystream over everything.)
-    assert!(buf.len() > 32 * 1024, "need bulk bytes for entropy, got {}", buf.len());
+    assert!(
+        buf.len() > 32 * 1024,
+        "need bulk bytes for entropy, got {}",
+        buf.len()
+    );
     for i in (0..buf.len() - 512).step_by(4096) {
-        assert!(shannon_entropy(&buf[i..i + 512]) > 7.0,
-                "post-NEWKEYS window at {i} must look encrypted");
+        assert!(
+            shannon_entropy(&buf[i..i + 512]) > 7.0,
+            "post-NEWKEYS window at {i} must look encrypted"
+        );
     }
 
     // ---- Dissect the captured server->client stream. ----
     let s2c = s2c.lock().unwrap().clone();
-    let nl = s2c.windows(2).position(|w| w == b"\r\n").expect("banner CRLF");
+    let nl = s2c
+        .windows(2)
+        .position(|w| w == b"\r\n")
+        .expect("banner CRLF");
     let banner = std::str::from_utf8(&s2c[..nl]).unwrap();
-    assert!(banner.starts_with("SSH-2.0-OpenSSH"), "server banner: {banner}");
+    assert!(
+        banner.starts_with("SSH-2.0-OpenSSH"),
+        "server banner: {banner}"
+    );
     let mut buf = &s2c[nl + 2..];
     let (msg, payload) = ssh_next_packet(&mut buf);
     assert_eq!(msg, 20, "server KEXINIT");
-    assert!(payload.len() > 400 && payload.len() < 1100, "server kexinit size class");
+    assert!(
+        payload.len() > 400 && payload.len() < 1100,
+        "server kexinit size class"
+    );
     // DH_REPLY: parse K_S / f / sig strings.
     let before = buf.len();
     let (msg, payload) = ssh_next_packet(&mut buf);
     assert_eq!(msg, 31, "DH_REPLY");
-    assert_eq!(before - buf.len(), 192, "OpenSSH DH_REPLY wire size (ed25519 hostkey)");
+    assert_eq!(
+        before - buf.len(),
+        192,
+        "OpenSSH DH_REPLY wire size (ed25519 hostkey)"
+    );
     let mut p = &payload[1..];
     let take_str = |p: &mut &[u8]| -> Vec<u8> {
         let l = u32::from_be_bytes(p[..4].try_into().unwrap()) as usize;
@@ -480,7 +604,11 @@ fn ssh_mimicry_wire_looks_like_ssh() {
     };
     let k_s = take_str(&mut p);
     assert_eq!(k_s.len(), 51, "ssh-ed25519 hostkey blob size");
-    assert_eq!(&k_s[..15], b"\x00\x00\x00\x0bssh-ed25519", "hostkey algorithm");
+    assert_eq!(
+        &k_s[..15],
+        b"\x00\x00\x00\x0bssh-ed25519",
+        "hostkey algorithm"
+    );
     let f = take_str(&mut p);
     assert_eq!(f.len(), 32, "server f");
     let sig = take_str(&mut p);
@@ -491,10 +619,16 @@ fn ssh_mimicry_wire_looks_like_ssh() {
     assert_eq!(msg, 21, "server NEWKEYS");
     assert_eq!(payload.len(), 1);
     // Post-NEWKEYS: encrypted.
-    assert!(buf.len() > 32 * 1024, "need bulk s2c bytes, got {}", buf.len());
+    assert!(
+        buf.len() > 32 * 1024,
+        "need bulk s2c bytes, got {}",
+        buf.len()
+    );
     for i in (0..buf.len() - 512).step_by(4096) {
-        assert!(shannon_entropy(&buf[i..i + 512]) > 7.0,
-                "s2c post-NEWKEYS window at {i} must look encrypted");
+        assert!(
+            shannon_entropy(&buf[i..i + 512]) > 7.0,
+            "s2c post-NEWKEYS window at {i} must look encrypted"
+        );
     }
 }
 
@@ -509,9 +643,8 @@ fn ssh_probe_garbage_gets_sshd_like_response() {
     let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = l.local_addr().unwrap();
     drop(l);
-    let listener = TcpListenerCarrier::bind_obfs(
-        addr, &PSK, &rawlink::ObfsMode::Ssh(ssh_cfg()),
-    ).unwrap();
+    let listener =
+        TcpListenerCarrier::bind_obfs(addr, &PSK, &rawlink::ObfsMode::Ssh(ssh_cfg())).unwrap();
     let server = thread::spawn(move || listener.accept().is_err());
 
     let mut s = std::net::TcpStream::connect(addr).unwrap();
@@ -519,20 +652,32 @@ fn ssh_probe_garbage_gets_sshd_like_response() {
     let mut buf = [0u8; 4096];
     let mut got = 0usize;
     while got < 256 {
-        let n = s.read(&mut buf[got..]).expect("banner+kexinit must precede any read");
+        let n = s
+            .read(&mut buf[got..])
+            .expect("banner+kexinit must precede any read");
         assert!(n > 0, "server must keep sending banner+KEXINIT");
         got += n;
     }
     assert!(got > 256, "banner + KEXINIT, got {got} bytes");
-    let nl = buf[..got].windows(2).position(|w| w == b"\r\n").expect("banner CRLF");
-    assert!(std::str::from_utf8(&buf[..nl]).unwrap().starts_with("SSH-2.0-OpenSSH"));
+    let nl = buf[..got]
+        .windows(2)
+        .position(|w| w == b"\r\n")
+        .expect("banner CRLF");
+    assert!(
+        std::str::from_utf8(&buf[..nl])
+            .unwrap()
+            .starts_with("SSH-2.0-OpenSSH")
+    );
     let plen = u32::from_be_bytes(buf[nl + 2..nl + 6].try_into().unwrap()) as usize;
     assert_eq!(buf[nl + 7], 20, "KEXINIT message type"); // after u32 len + u8 padlen
     let _ = plen;
     // Now send garbage identification and close.
     let _ = s.write_all(&[0xA7; 64]);
     let _ = s.shutdown(std::net::Shutdown::Write);
-    assert!(server.join().expect("server thread"), "ssh server must reject garbage");
+    assert!(
+        server.join().expect("server thread"),
+        "ssh server must reject garbage"
+    );
 }
 
 #[test]
@@ -542,7 +687,16 @@ fn ssh_client_to_rand_server_fails_fast() {
     let started = Instant::now();
     let (sid, early) = rawlink::session::build_first_packet(&PSK).unwrap();
     let out = TcpCarrier::connect_obfs_ssh_early(addr, &PSK, &ssh_cfg(), &early, sid.as_bytes());
-    assert!(out.is_err(), "ssh client must not establish against a rand server");
-    assert!(started.elapsed() < Duration::from_secs(15), "failure must be bounded");
-    assert!(server.join().unwrap(), "rand server must reject the ssh client");
+    assert!(
+        out.is_err(),
+        "ssh client must not establish against a rand server"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(15),
+        "failure must be bounded"
+    );
+    assert!(
+        server.join().unwrap(),
+        "rand server must reject the ssh client"
+    );
 }

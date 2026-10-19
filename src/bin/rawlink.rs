@@ -17,7 +17,11 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 #[derive(Parser)]
-#[command(name = "rawlink", version, about = "RawLink encrypted transport + SOCKS5 proxy")]
+#[command(
+    name = "rawlink",
+    version,
+    about = "RawLink encrypted transport + SOCKS5 proxy"
+)]
 struct Cli {
     #[arg(long, default_value = "info", global = true)]
     log_level: String,
@@ -25,7 +29,10 @@ struct Cli {
     cmd: Cmd,
 }
 #[derive(Subcommand)]
-enum Cmd { Client(ClientArgs), Server(ServerArgs) }
+enum Cmd {
+    Client(ClientArgs),
+    Server(ServerArgs),
+}
 
 #[derive(clap::Args)]
 struct ClientArgs {
@@ -139,13 +146,21 @@ fn main() {
 fn parse_psk(hex_str: &Option<String>) -> [u8; 32] {
     if let Some(h) = hex_str {
         let mut out = [0u8; 32];
-        if h.len() != 64 { eprintln!("--psk must be 64 hex chars"); std::process::exit(2); }
+        if h.len() != 64 {
+            eprintln!("--psk must be 64 hex chars");
+            std::process::exit(2);
+        }
         for (i, b) in out.iter_mut().enumerate() {
-            *b = u8::from_str_radix(&h[i * 2..i * 2 + 2], 16)
-                .unwrap_or_else(|_| { eprintln!("bad hex"); std::process::exit(2) });
+            *b = u8::from_str_radix(&h[i * 2..i * 2 + 2], 16).unwrap_or_else(|_| {
+                eprintln!("bad hex");
+                std::process::exit(2)
+            });
         }
         out
-    } else { log::warn!("using dev PSK — DO NOT USE IN PRODUCTION"); DEV_PSK }
+    } else {
+        log::warn!("using dev PSK — DO NOT USE IN PRODUCTION");
+        DEV_PSK
+    }
 }
 
 fn parse_mode(s: &str) -> rawlink::config::TransportMode {
@@ -157,28 +172,43 @@ fn parse_mode(s: &str) -> rawlink::config::TransportMode {
 }
 
 fn build_config(mode: &str, max_streams: u32) -> Config {
-    if max_streams == 0 { eprintln!("--max-streams must be > 0"); std::process::exit(2); }
-    Config { mode: parse_mode(mode), max_streams_per_session: max_streams, ..Default::default() }
+    if max_streams == 0 {
+        eprintln!("--max-streams must be > 0");
+        std::process::exit(2);
+    }
+    Config {
+        mode: parse_mode(mode),
+        max_streams_per_session: max_streams,
+        ..Default::default()
+    }
 }
 
 /// Parse `--obfs-dummy "min-max"` (ms) or "off".
-fn build_obfs_mode(obfs: &Option<String>, padding: u8, dummy: &str, dummy_size: u16,
-                   ssh_banner: &str)
-    -> Result<Option<rawlink::ObfsMode>, String>
-{
+fn build_obfs_mode(
+    obfs: &Option<String>,
+    padding: u8,
+    dummy: &str,
+    dummy_size: u16,
+    ssh_banner: &str,
+) -> Result<Option<rawlink::ObfsMode>, String> {
     let Some(obfs) = obfs else { return Ok(None) };
     let mode = obfs.to_ascii_lowercase();
-    if mode.is_empty() || mode == "off" || mode == "none" { return Ok(None); }
+    if mode.is_empty() || mode == "off" || mode == "none" {
+        return Ok(None);
+    }
     if mode == "ssh" {
         let cfg = rawlink::obfs_ssh::SshObfsConfig {
             banner: ssh_banner.to_string(),
             padding_max: padding,
         };
-        cfg.validate().map_err(|e| format!("invalid obfs-ssh config: {e}"))?;
+        cfg.validate()
+            .map_err(|e| format!("invalid obfs-ssh config: {e}"))?;
         return Ok(Some(rawlink::ObfsMode::Ssh(cfg)));
     }
     if mode != "rand" {
-        return Err(format!("unknown --obfs mode '{obfs}' (expected rand|ssh|off)"));
+        return Err(format!(
+            "unknown --obfs mode '{obfs}' (expected rand|ssh|off)"
+        ));
     }
     let off = dummy.trim().eq_ignore_ascii_case("off");
     let (dmin, dmax) = if off {
@@ -187,7 +217,10 @@ fn build_obfs_mode(obfs: &Option<String>, padding: u8, dummy: &str, dummy_size: 
         match dummy.split_once('-') {
             Some((a, b)) => (a.trim().parse::<u32>(), b.trim().parse::<u32>()),
             None => {
-                let v = dummy.trim().parse::<u32>().map_err(|_| "bad --obfs-dummy".to_string())?;
+                let v = dummy
+                    .trim()
+                    .parse::<u32>()
+                    .map_err(|_| "bad --obfs-dummy".to_string())?;
                 (Ok(v), Ok(v))
             }
         }
@@ -200,14 +233,18 @@ fn build_obfs_mode(obfs: &Option<String>, padding: u8, dummy: &str, dummy_size: 
         dummy_max_ms: dmax.max(dmin.max(50)),
         dummy_size_max: if off { 0 } else { dummy_size },
     };
-    cfg.validate().map_err(|e| format!("invalid obfs config: {e}"))?;
+    cfg.validate()
+        .map_err(|e| format!("invalid obfs config: {e}"))?;
     Ok(Some(rawlink::ObfsMode::Rand(cfg)))
 }
 
 fn parse_addr(s: &str, what: &str) -> SocketAddr {
     match s.parse() {
         Ok(a) => a,
-        Err(_) => { eprintln!("bad {what}: {s}"); std::process::exit(2); }
+        Err(_) => {
+            eprintln!("bad {what}: {s}");
+            std::process::exit(2);
+        }
     }
 }
 
@@ -218,9 +255,18 @@ fn parse_addr(s: &str, what: &str) -> SocketAddr {
 fn run_server(args: ServerArgs) -> i32 {
     let psk = parse_psk(&args.psk);
     let config = build_config(&args.mode, args.max_streams);
-    let obfs = match build_obfs_mode(&args.obfs, args.obfs_padding, &args.obfs_dummy, args.obfs_dummy_size, &args.ssh_banner) {
+    let obfs = match build_obfs_mode(
+        &args.obfs,
+        args.obfs_padding,
+        &args.obfs_dummy,
+        args.obfs_dummy_size,
+        &args.ssh_banner,
+    ) {
         Ok(o) => o,
-        Err(e) => { eprintln!("{e}"); return 2; }
+        Err(e) => {
+            eprintln!("{e}");
+            return 2;
+        }
     };
     let listen_addr = parse_addr(&args.listen, "--listen");
 
@@ -230,12 +276,25 @@ fn run_server(args: ServerArgs) -> i32 {
     };
     let listener = match listener {
         Ok(l) => l,
-        Err(e) => { log::error!("carrier init failed: {e}"); return 4; }
+        Err(e) => {
+            log::error!("carrier init failed: {e}");
+            return 4;
+        }
     };
     match &obfs {
-        Some(rawlink::ObfsMode::Ssh(_)) => log::info!("RawLink server listening on {} (tcp carrier, obfs=ssh '{}')", listener.local_addr(), args.ssh_banner),
-        Some(_) => log::info!("RawLink server listening on {} (tcp carrier, obfuscation ON)", listener.local_addr()),
-        None => log::info!("RawLink server listening on {} (tcp carrier)", listener.local_addr()),
+        Some(rawlink::ObfsMode::Ssh(_)) => log::info!(
+            "RawLink server listening on {} (tcp carrier, obfs=ssh '{}')",
+            listener.local_addr(),
+            args.ssh_banner
+        ),
+        Some(_) => log::info!(
+            "RawLink server listening on {} (tcp carrier, obfuscation ON)",
+            listener.local_addr()
+        ),
+        None => log::info!(
+            "RawLink server listening on {} (tcp carrier)",
+            listener.local_addr()
+        ),
     }
 
     let pending = Arc::new(std::sync::atomic::AtomicU32::new(0));
@@ -254,16 +313,23 @@ fn run_server(args: ServerArgs) -> i32 {
         };
         let peer = carrier.remote_addr().to_string();
         if pending.load(std::sync::atomic::Ordering::Relaxed) >= rawlink::server::MAX_PENDING {
-            log::warn!("pending limit {} reached, rejecting {}", rawlink::server::MAX_PENDING, peer);
+            log::warn!(
+                "pending limit {} reached, rejecting {}",
+                rawlink::server::MAX_PENDING,
+                peer
+            );
             continue;
         }
         let psk_copy = psk;
         let config_clone = config.clone();
         let p = Arc::clone(&pending);
         let a = Arc::clone(&active);
-        if let Err(e) = thread::Builder::new().name(format!("rl-srv-{peer}")).spawn(move || {
-            rawlink::server::handle_connection(carrier, peer, psk_copy, config_clone, &p, &a)
-        }) {
+        if let Err(e) = thread::Builder::new()
+            .name(format!("rl-srv-{peer}"))
+            .spawn(move || {
+                rawlink::server::handle_connection(carrier, peer, psk_copy, config_clone, &p, &a)
+            })
+        {
             log::error!("spawn session thread: {e}");
         }
     }
@@ -276,36 +342,54 @@ fn run_server(args: ServerArgs) -> i32 {
 fn run_client(args: ClientArgs) -> i32 {
     let psk = parse_psk(&args.psk);
     let config = build_config(&args.mode, args.max_streams);
-    let obfs = match build_obfs_mode(&args.obfs, args.obfs_padding, &args.obfs_dummy, args.obfs_dummy_size, &args.ssh_banner) {
+    let obfs = match build_obfs_mode(
+        &args.obfs,
+        args.obfs_padding,
+        &args.obfs_dummy,
+        args.obfs_dummy_size,
+        &args.ssh_banner,
+    ) {
         Ok(o) => o,
-        Err(e) => { eprintln!("{e}"); return 2; }
+        Err(e) => {
+            eprintln!("{e}");
+            return 2;
+        }
     };
     let server_addr = parse_addr(&args.server, "--server");
     let socks_addr = parse_addr(&args.socks_listen, "--socks-listen");
 
     let listener = match TcpListener::bind(socks_addr) {
         Ok(l) => l,
-        Err(e) => { log::error!("SOCKS5 bind {socks_addr}: {e}"); return 3; }
+        Err(e) => {
+            log::error!("SOCKS5 bind {socks_addr}: {e}");
+            return 3;
+        }
     };
     log::info!("SOCKS5 listening on {socks_addr}");
 
     // The tunnel set: auto-reconnect with backoff, auto scale-out/in.
     let manager = TunnelManager::start(TunnelConfig {
-        server: server_addr, psk,
+        server: server_addr,
+        psk,
         session: config,
         obfs,
         max_tunnels: args.max_tunnels.max(1),
         ..Default::default()
     });
-    log::info!("tunnel set: max {} tunnel(s) x {} streams each (auto scale-out)",
-        args.max_tunnels.max(1), args.max_streams);
+    log::info!(
+        "tunnel set: max {} tunnel(s) x {} streams each (auto scale-out)",
+        args.max_tunnels.max(1),
+        args.max_streams
+    );
 
     // Load shed: each SOCKS5 connection holds 2 fds for its whole lifetime.
     // Without a cap, the fd table fills under load and accept() starts
     // failing with EMFILE — every new connection rejected by the OS.
     let max_conn = args.max_conn;
     let active_conns = Arc::new(std::sync::atomic::AtomicU32::new(0));
-    let last_shed_warn = Arc::new(std::sync::Mutex::new(Instant::now() - Duration::from_secs(10)));
+    let last_shed_warn = Arc::new(std::sync::Mutex::new(
+        Instant::now() - Duration::from_secs(10),
+    ));
 
     for stream in listener.incoming() {
         match stream {
@@ -320,7 +404,9 @@ fn run_client(args: ClientArgs) -> i32 {
                     let mut last = last_shed_warn.lock().unwrap();
                     if last.elapsed() > Duration::from_secs(1) {
                         *last = Instant::now();
-                        log::warn!("connection limit {max_conn} reached — shedding new SOCKS5 connections (consider raising --max-conn and ulimit -n)");
+                        log::warn!(
+                            "connection limit {max_conn} reached — shedding new SOCKS5 connections (consider raising --max-conn and ulimit -n)"
+                        );
                     }
                     drop(io); // close immediately; peer sees EOF
                     continue;

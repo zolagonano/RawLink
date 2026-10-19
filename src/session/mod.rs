@@ -9,7 +9,7 @@
 //!   building+encryption, and the carrier writes themselves. It sleeps on a
 //!   condvar ([`SendWaker`]) and is woken the instant new work is enqueued.
 use crate::carrier::Carrier;
-use crate::config::{HEADER_LEN, Config};
+use crate::config::{Config, HEADER_LEN};
 use crate::crypto::{self, Direction, TrafficKeySet};
 use crate::error::Error;
 use crate::frame::*;
@@ -18,7 +18,7 @@ use crate::stream::StreamId;
 use rand::RngCore;
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::AtomicU64;
-use std::sync::{mpsc, Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -75,9 +75,17 @@ const MAX_PACKS_PER_WAKE: usize = 8;
 /// the condvar instead of polling. `notify()` sets the flag THEN signals;
 /// `wait()` clears the flag before the caller re-checks for work, so a
 /// wakeup can never be missed.
-pub struct SendWaker { flag: Mutex<bool>, cv: Condvar }
+pub struct SendWaker {
+    flag: Mutex<bool>,
+    cv: Condvar,
+}
 impl SendWaker {
-    fn new() -> Self { Self { flag: Mutex::new(false), cv: Condvar::new() } }
+    fn new() -> Self {
+        Self {
+            flag: Mutex::new(false),
+            cv: Condvar::new(),
+        }
+    }
     pub fn notify(&self) {
         let mut f = self.flag.lock().unwrap();
         *f = true;
@@ -94,15 +102,27 @@ impl SendWaker {
     }
 }
 
-type UnclaimedStream = (mpsc::SyncSender<StreamCommand>, mpsc::Receiver<StreamEvent>, Arc<AtomicU64>);
+type UnclaimedStream = (
+    mpsc::SyncSender<StreamCommand>,
+    mpsc::Receiver<StreamEvent>,
+    Arc<AtomicU64>,
+);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Role { Client, Server }
+pub enum Role {
+    Client,
+    Server,
+}
 impl Role {
     fn send_dir(self) -> Direction {
-        match self { Self::Client => Direction::ClientToServer, Self::Server => Direction::ServerToClient }
+        match self {
+            Self::Client => Direction::ClientToServer,
+            Self::Server => Direction::ServerToClient,
+        }
     }
-    fn recv_dir(self) -> Direction { self.send_dir().opposite() }
+    fn recv_dir(self) -> Direction {
+        self.send_dir().opposite()
+    }
 }
 
 /// Why a session was shut down. Always logged on shutdown
@@ -149,9 +169,15 @@ impl SessionId {
         rand::rng().fill_bytes(&mut b);
         Self(b)
     }
-    pub fn from_u64(v: u64) -> Self { Self(v.to_le_bytes()) }
-    pub fn as_u64(&self) -> u64 { u64::from_le_bytes(self.0) }
-    pub fn as_bytes(&self) -> &[u8; 8] { &self.0 }
+    pub fn from_u64(v: u64) -> Self {
+        Self(v.to_le_bytes())
+    }
+    pub fn as_u64(&self) -> u64 {
+        u64::from_le_bytes(self.0)
+    }
+    pub fn as_bytes(&self) -> &[u8; 8] {
+        &self.0
+    }
 }
 pub struct Stream {
     pub stream_id: StreamId,
@@ -172,13 +198,39 @@ pub struct Stream {
     pending_data: Mutex<VecDeque<Vec<u8>>>,
 }
 #[derive(Debug)]
-pub enum StreamCommand { Write(Vec<u8>), Close, Reset(u8), OpenTcp(u8, Vec<u8>, u16), SendOpenTcpResponse(u8, String), Drop }
+pub enum StreamCommand {
+    Write(Vec<u8>),
+    Close,
+    Reset(u8),
+    OpenTcp(u8, Vec<u8>, u16),
+    SendOpenTcpResponse(u8, String),
+    Drop,
+}
 #[derive(Debug, Clone)]
-pub enum StreamEvent { Data(Vec<u8>), PeerFin, PeerReset(u8), OpenTcpResponse(OpenTcpResponseFrame), SessionClosed }
+pub enum StreamEvent {
+    Data(Vec<u8>),
+    PeerFin,
+    PeerReset(u8),
+    OpenTcpResponse(OpenTcpResponseFrame),
+    SessionClosed,
+}
 impl Stream {
-    fn new(sid: StreamId, tx: mpsc::SyncSender<StreamCommand>, rx: mpsc::Receiver<StreamEvent>, rx_evt_depth: Arc<AtomicU64>, waker: Arc<SendWaker>) -> Self {
-        Self { stream_id: sid, tx_cmd: tx, rx_evt: Mutex::new(rx), closed: Mutex::new(false), waker, rx_evt_depth,
-            pending_data: Mutex::new(VecDeque::new()) }
+    fn new(
+        sid: StreamId,
+        tx: mpsc::SyncSender<StreamCommand>,
+        rx: mpsc::Receiver<StreamEvent>,
+        rx_evt_depth: Arc<AtomicU64>,
+        waker: Arc<SendWaker>,
+    ) -> Self {
+        Self {
+            stream_id: sid,
+            tx_cmd: tx,
+            rx_evt: Mutex::new(rx),
+            closed: Mutex::new(false),
+            waker,
+            rx_evt_depth,
+            pending_data: Mutex::new(VecDeque::new()),
+        }
     }
     pub fn write(&self, data: &[u8]) -> Result<usize, Error> {
         // We do NOT check the `closed` flag here: it is set by read() on
@@ -187,8 +239,12 @@ impl Stream {
         // once the stream is actually cleaned up, which is the correct
         // signal. Zero-length writes are rejected: an empty DATA frame
         // would be indistinguishable from PeerFin on the receiving side.
-        if data.is_empty() { return Ok(0); }
-        self.tx_cmd.send(StreamCommand::Write(data.to_vec())).map_err(|_| Error::Application("closed".into()))?;
+        if data.is_empty() {
+            return Ok(0);
+        }
+        self.tx_cmd
+            .send(StreamCommand::Write(data.to_vec()))
+            .map_err(|_| Error::Application("closed".into()))?;
         self.waker.notify();
         Ok(data.len())
     }
@@ -202,24 +258,31 @@ impl Stream {
         loop {
             match rx.recv() {
                 Ok(StreamEvent::Data(d)) => {
-                    self.rx_evt_depth.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                    self.rx_evt_depth
+                        .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
                     return Ok(d);
                 }
                 Ok(StreamEvent::PeerFin) => {
-                    self.rx_evt_depth.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-                    *self.closed.lock().unwrap() = true; return Ok(Vec::new());
+                    self.rx_evt_depth
+                        .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                    *self.closed.lock().unwrap() = true;
+                    return Ok(Vec::new());
                 }
                 Ok(StreamEvent::PeerReset(_)) => {
-                    self.rx_evt_depth.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-                    *self.closed.lock().unwrap() = true; return Err(Error::Application("reset".into()));
+                    self.rx_evt_depth
+                        .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                    *self.closed.lock().unwrap() = true;
+                    return Err(Error::Application("reset".into()));
                 }
                 Ok(StreamEvent::OpenTcpResponse(_)) => {
-                    self.rx_evt_depth.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                    self.rx_evt_depth
+                        .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
                     continue;
                 }
                 Ok(StreamEvent::SessionClosed) | Err(_) => {
                     // The channel is closed — depth is no longer meaningful.
-                    *self.closed.lock().unwrap() = true; return Err(Error::Application("session closed".into()));
+                    *self.closed.lock().unwrap() = true;
+                    return Err(Error::Application("session closed".into()));
                 }
             }
         }
@@ -238,21 +301,25 @@ impl Stream {
             }
             match rx.recv_timeout(remaining) {
                 Ok(StreamEvent::OpenTcpResponse(r)) => {
-                    self.rx_evt_depth.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                    self.rx_evt_depth
+                        .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
                     return Ok(r);
                 }
                 Ok(StreamEvent::Data(d)) => {
-                    self.rx_evt_depth.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                    self.rx_evt_depth
+                        .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
                     self.pending_data.lock().unwrap().push_back(d);
                 }
                 Ok(StreamEvent::PeerFin) => {
-                    self.rx_evt_depth.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                    self.rx_evt_depth
+                        .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
                     // Peer closed before answering the dial.
                     *self.closed.lock().unwrap() = true;
                     return Err(Error::Application("closed".into()));
                 }
                 Ok(StreamEvent::PeerReset(_)) => {
-                    self.rx_evt_depth.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                    self.rx_evt_depth
+                        .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
                     *self.closed.lock().unwrap() = true;
                     return Err(Error::Application("reset".into()));
                 }
@@ -267,16 +334,29 @@ impl Stream {
         }
     }
     pub fn close(&self) -> Result<(), Error> {
-        self.tx_cmd.send(StreamCommand::Close).map_err(|_| Error::Application("closed".into()))?;
-        self.waker.notify(); Ok(())
+        self.tx_cmd
+            .send(StreamCommand::Close)
+            .map_err(|_| Error::Application("closed".into()))?;
+        self.waker.notify();
+        Ok(())
     }
     pub fn open_tcp(&self, atyp: u8, addr: Vec<u8>, port: u16) -> Result<(), Error> {
-        self.tx_cmd.send(StreamCommand::OpenTcp(atyp, addr, port)).map_err(|_| Error::Application("closed".into()))?;
-        self.waker.notify(); Ok(())
+        self.tx_cmd
+            .send(StreamCommand::OpenTcp(atyp, addr, port))
+            .map_err(|_| Error::Application("closed".into()))?;
+        self.waker.notify();
+        Ok(())
     }
-    pub fn send_open_tcp_response(&self, status: u8, reason: impl Into<String>) -> Result<(), Error> {
-        self.tx_cmd.send(StreamCommand::SendOpenTcpResponse(status, reason.into())).map_err(|_| Error::Application("closed".into()))?;
-        self.waker.notify(); Ok(())
+    pub fn send_open_tcp_response(
+        &self,
+        status: u8,
+        reason: impl Into<String>,
+    ) -> Result<(), Error> {
+        self.tx_cmd
+            .send(StreamCommand::SendOpenTcpResponse(status, reason.into()))
+            .map_err(|_| Error::Application("closed".into()))?;
+        self.waker.notify();
+        Ok(())
     }
 }
 impl Drop for Stream {
@@ -336,7 +416,12 @@ impl Drop for DriverStream {
     fn drop(&mut self) {
         log::debug!(
             "DriverStream dropped sid={:?} fin_sent={} fin_recv={} close_stream_sent={} send_buf_len={} data_bytes_dispatched={}",
-            self.sid_log, self.fin_sent, self.fin_recv, self.close_stream_sent, self.send_buf.len(), self.data_bytes_dispatched
+            self.sid_log,
+            self.fin_sent,
+            self.fin_recv,
+            self.close_stream_sent,
+            self.send_buf.len(),
+            self.data_bytes_dispatched
         );
     }
 }
@@ -427,8 +512,14 @@ struct SessionInner {
 }
 #[derive(Debug, Clone, Default)]
 pub struct SessionStats {
-    pub packets_sent: u64, pub packets_recv: u64, pub bytes_sent: u64, pub bytes_recv: u64,
-    pub pings_sent: u64, pub pongs_recv: u64, pub streams_open: u32, pub streams_total: u32,
+    pub packets_sent: u64,
+    pub packets_recv: u64,
+    pub bytes_sent: u64,
+    pub bytes_recv: u64,
+    pub pings_sent: u64,
+    pub pongs_recv: u64,
+    pub streams_open: u32,
+    pub streams_total: u32,
     pub session_uptime_ms: u64,
 }
 /// Richer metrics snapshot — for diagnosing where the session stalls.
@@ -483,19 +574,36 @@ pub struct SessionMetrics {
     pub pending_events_soft_limit: u64,
 }
 pub struct Session {
-    inner: Arc<Mutex<SessionInner>>, tx_cmd: mpsc::Sender<SessionCommand>,
+    inner: Arc<Mutex<SessionInner>>,
+    tx_cmd: mpsc::Sender<SessionCommand>,
     open_tcp_rx: Mutex<mpsc::Receiver<(StreamId, OpenTcpFrame)>>,
-    alive: Arc<std::sync::atomic::AtomicBool>, started_at: Instant,
+    alive: Arc<std::sync::atomic::AtomicBool>,
+    started_at: Instant,
 }
-enum SessionCommand { OpenStream { reply: mpsc::Sender<Result<Stream, Error>> }, CloseSession }
+enum SessionCommand {
+    OpenStream {
+        reply: mpsc::Sender<Result<Stream, Error>>,
+    },
+    CloseSession,
+}
 impl Session {
-    pub fn connect_pre_shared<C: Carrier + 'static>(carrier: C, psk: [u8; 32], config: Config) -> Result<Self, Error> {
-        let sid = SessionId::generate(); let keys = crypto::derive_keys(sid.as_bytes(), &psk);
+    pub fn connect_pre_shared<C: Carrier + 'static>(
+        carrier: C,
+        psk: [u8; 32],
+        config: Config,
+    ) -> Result<Self, Error> {
+        let sid = SessionId::generate();
+        let keys = crypto::derive_keys(sid.as_bytes(), &psk);
         Self::start(carrier, keys, Role::Client, sid, config, false)
     }
     /// Client variant with a caller-chosen session id — required when the
     /// carrier derives its v3 header mask from the id (TCP carrier dials).
-    pub fn connect_pre_shared_with_sid<C: Carrier + 'static>(carrier: C, psk: [u8; 32], config: Config, sid: SessionId) -> Result<Self, Error> {
+    pub fn connect_pre_shared_with_sid<C: Carrier + 'static>(
+        carrier: C,
+        psk: [u8; 32],
+        config: Config,
+        sid: SessionId,
+    ) -> Result<Self, Error> {
         let keys = crypto::derive_keys(sid.as_bytes(), &psk);
         Self::start(carrier, keys, Role::Client, sid, config, false)
     }
@@ -503,16 +611,32 @@ impl Session {
     /// (`pn=1`, the authenticated hello Ping) was already sent inside the
     /// carrier handshake (see [`build_first_packet`]). The session starts
     /// at `pn=2` and does not re-send the hello.
-    pub fn connect_pre_shared_preamble<C: Carrier + 'static>(carrier: C, psk: [u8; 32], config: Config, sid: SessionId) -> Result<Self, Error> {
+    pub fn connect_pre_shared_preamble<C: Carrier + 'static>(
+        carrier: C,
+        psk: [u8; 32],
+        config: Config,
+        sid: SessionId,
+    ) -> Result<Self, Error> {
         let keys = crypto::derive_keys(sid.as_bytes(), &psk);
         Self::start(carrier, keys, Role::Client, sid, config, true)
     }
-    pub fn accept_pre_shared<C: Carrier + 'static>(carrier: C, session_id: SessionId, psk: [u8; 32], config: Config) -> Result<Self, Error> {
+    pub fn accept_pre_shared<C: Carrier + 'static>(
+        carrier: C,
+        session_id: SessionId,
+        psk: [u8; 32],
+        config: Config,
+    ) -> Result<Self, Error> {
         let keys = crypto::derive_keys(session_id.as_bytes(), &psk);
         Self::start(carrier, keys, Role::Server, session_id, config, false)
     }
-    fn start<C: Carrier + 'static>(carrier: C, keys: TrafficKeySet, role: Role, sid: SessionId, config: Config,
-                                   preamble: bool) -> Result<Self, Error> {
+    fn start<C: Carrier + 'static>(
+        carrier: C,
+        keys: TrafficKeySet,
+        role: Role,
+        sid: SessionId,
+        config: Config,
+        preamble: bool,
+    ) -> Result<Self, Error> {
         config.validate()?;
         let (open_tcp_tx, open_tcp_rx) = mpsc::channel();
         let (tx_cmd, rx_cmd) = mpsc::channel();
@@ -520,12 +644,29 @@ impl Session {
         let waker = Arc::new(SendWaker::new());
         let now = Instant::now();
         let inner = Arc::new(Mutex::new(SessionInner {
-            role, session_id: sid.clone(), keys, recv_replay: ReplayWindow::new(), config,
-            streams: HashMap::new(), unclaimed: HashMap::new(), open_tcp_tx,
-            next_pn: if preamble && role == Role::Client { 2 } else { 1 },
-            next_stream_num: 0, streams_total: 0, closing: false,
-            outgoing: VecDeque::new(), total_sent: 0, total_recv: 0,
-            last_recv: now, last_send: now, last_ping_sent: now, last_pong: now,
+            role,
+            session_id: sid.clone(),
+            keys,
+            recv_replay: ReplayWindow::new(),
+            config,
+            streams: HashMap::new(),
+            unclaimed: HashMap::new(),
+            open_tcp_tx,
+            next_pn: if preamble && role == Role::Client {
+                2
+            } else {
+                1
+            },
+            next_stream_num: 0,
+            streams_total: 0,
+            closing: false,
+            outgoing: VecDeque::new(),
+            total_sent: 0,
+            total_recv: 0,
+            last_recv: now,
+            last_send: now,
+            last_ping_sent: now,
+            last_pong: now,
             next_ping_at: now + jittered_ping_interval(),
             pings_since_recv: 0,
             stats: SessionStats::default(),
@@ -546,24 +687,44 @@ impl Session {
         // admission read completes instantly and the frame is dispatched
         // normally (replayed via PreLoadedCarrier → answered with a Pong).
         if role == Role::Client && !preamble {
-            inner.lock().unwrap().outgoing.push_back(Frame::Ping(PingFrame { echo: 0 }));
+            inner
+                .lock()
+                .unwrap()
+                .outgoing
+                .push_back(Frame::Ping(PingFrame { echo: 0 }));
         }
         let carrier = Arc::new(carrier);
-        let rc = Arc::clone(&carrier); let ri = Arc::clone(&inner); let ra = Arc::clone(&alive);
-        let j = thread::Builder::new().name(format!("rl-{}", sid.as_u64()))
-            .spawn(move || recv_loop(rc, ri, ra)).map_err(|e| Error::Transport(format!("spawn recv: {e}")))?;
+        let rc = Arc::clone(&carrier);
+        let ri = Arc::clone(&inner);
+        let ra = Arc::clone(&alive);
+        let j = thread::Builder::new()
+            .name(format!("rl-{}", sid.as_u64()))
+            .spawn(move || recv_loop(rc, ri, ra))
+            .map_err(|e| Error::Transport(format!("spawn recv: {e}")))?;
         drop(j); // detached recv thread; exits via the alive flag
-        let sc = Arc::clone(&carrier); let si = Arc::clone(&inner); let sa = Arc::clone(&alive);
+        let sc = Arc::clone(&carrier);
+        let si = Arc::clone(&inner);
+        let sa = Arc::clone(&alive);
         let sw = Arc::clone(&waker);
-        let j2 = thread::Builder::new().name(format!("rl-send-{}", sid.as_u64()))
-            .spawn(move || sender_loop(sc, si, rx_cmd, sa, sw)).map_err(|e| Error::Transport(format!("spawn sender: {e}")))?;
+        let j2 = thread::Builder::new()
+            .name(format!("rl-send-{}", sid.as_u64()))
+            .spawn(move || sender_loop(sc, si, rx_cmd, sa, sw))
+            .map_err(|e| Error::Transport(format!("spawn sender: {e}")))?;
         drop(j2); // detached sender thread; exits via the alive flag
         waker.notify(); // the pre-queued hello Ping must leave immediately
-        Ok(Self { inner, tx_cmd, open_tcp_rx: Mutex::new(open_tcp_rx), alive, started_at: now })
+        Ok(Self {
+            inner,
+            tx_cmd,
+            open_tcp_rx: Mutex::new(open_tcp_rx),
+            alive,
+            started_at: now,
+        })
     }
     pub fn open_stream(&self) -> Result<Stream, Error> {
         let (tx, rx) = mpsc::channel();
-        self.tx_cmd.send(SessionCommand::OpenStream { reply: tx }).map_err(|_| Error::Application("closed".into()))?;
+        self.tx_cmd
+            .send(SessionCommand::OpenStream { reply: tx })
+            .map_err(|_| Error::Application("closed".into()))?;
         // Wake the send thread so the OpenStream is processed (and its
         // OPEN_STREAM frame packed) within microseconds.
         self.inner.lock().unwrap().waker.notify();
@@ -571,38 +732,62 @@ impl Session {
     }
     pub fn accept_open_tcp(&self) -> Result<(Stream, OpenTcpFrame), Error> {
         loop {
-            if !self.is_alive() { return Err(Error::Application("session closed".into())); }
-            match self.open_tcp_rx.lock().unwrap().recv_timeout(Duration::from_millis(100)) {
+            if !self.is_alive() {
+                return Err(Error::Application("session closed".into()));
+            }
+            match self
+                .open_tcp_rx
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_millis(100))
+            {
                 Ok((sid, otc)) => {
-                    let handle = { let mut g = self.inner.lock().unwrap();
-                        g.unclaimed.remove(&sid) };
+                    let handle = {
+                        let mut g = self.inner.lock().unwrap();
+                        g.unclaimed.remove(&sid)
+                    };
                     match handle {
                         Some((tx_cmd, rx_evt, rx_evt_depth)) => {
                             let waker = Arc::clone(&self.inner.lock().unwrap().waker);
-                            return Ok((Stream::new(sid, tx_cmd, rx_evt, rx_evt_depth, waker), otc));
+                            return Ok((
+                                Stream::new(sid, tx_cmd, rx_evt, rx_evt_depth, waker),
+                                otc,
+                            ));
                         }
                         None => {
                             // Duplicate OPEN_TCP for an already-accepted
                             // stream (dup carrier, replay, buggy peer) —
                             // must not kill the accept loop.
-                            log::warn!("accept_open_tcp: no unclaimed handle for sid={sid:?} (duplicate OPEN_TCP?) — ignoring");
+                            log::warn!(
+                                "accept_open_tcp: no unclaimed handle for sid={sid:?} (duplicate OPEN_TCP?) — ignoring"
+                            );
                             continue;
                         }
                     }
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => continue,
-                Err(mpsc::RecvTimeoutError::Disconnected) => return Err(Error::Application("closed".into())),
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err(Error::Application("closed".into()));
+                }
             }
         }
     }
-    pub fn session_id(&self) -> u64 { self.inner.lock().unwrap().session_id.as_u64() }
-    pub fn role(&self) -> Role { self.inner.lock().unwrap().role }
-    pub fn is_alive(&self) -> bool { self.alive.load(std::sync::atomic::Ordering::Relaxed) }
+    pub fn session_id(&self) -> u64 {
+        self.inner.lock().unwrap().session_id.as_u64()
+    }
+    pub fn role(&self) -> Role {
+        self.inner.lock().unwrap().role
+    }
+    pub fn is_alive(&self) -> bool {
+        self.alive.load(std::sync::atomic::Ordering::Relaxed)
+    }
     pub fn stats(&self) -> SessionStats {
         let g = self.inner.lock().unwrap();
         let mut s = g.stats.clone();
-        s.streams_open = g.streams.len() as u32; s.streams_total = g.streams_total;
-        s.session_uptime_ms = self.started_at.elapsed().as_millis() as u64; s
+        s.streams_open = g.streams.len() as u32;
+        s.streams_total = g.streams_total;
+        s.session_uptime_ms = self.started_at.elapsed().as_millis() as u64;
+        s
     }
     /// Richer metrics snapshot — see `SessionMetrics`.
     pub fn metrics(&self) -> SessionMetrics {
@@ -620,15 +805,22 @@ impl Session {
             send_buf_total_bytes += bytes;
             let depth = ds.rx_evt_depth.load(std::sync::atomic::Ordering::Relaxed);
             rx_evt_total_depth += depth;
-            if bytes >= send_cap { streams_at_send_cap += 1; }
-            if depth >= rx_evt_cap_per_stream { streams_at_rx_evt_cap += 1; }
+            if bytes >= send_cap {
+                streams_at_send_cap += 1;
+            }
+            if depth >= rx_evt_cap_per_stream {
+                streams_at_rx_evt_cap += 1;
+            }
         }
         let mode_str = match g.config.mode {
             crate::config::TransportMode::LowLatency => "low-latency",
             crate::config::TransportMode::Balanced => "balanced",
             crate::config::TransportMode::Throughput => "throughput",
         };
-        let role_str = match g.role { Role::Client => "client", Role::Server => "server" };
+        let role_str = match g.role {
+            Role::Client => "client",
+            Role::Server => "server",
+        };
         SessionMetrics {
             session_id: g.session_id.as_u64(),
             role: role_str,
@@ -664,14 +856,24 @@ impl Session {
     }
     /// Get a clone of the alive flag for passing to bridge threads.
     /// Bridge threads check this to know when their session has died.
-    pub fn alive_flag(&self) -> Arc<std::sync::atomic::AtomicBool> { Arc::clone(&self.alive) }
+    pub fn alive_flag(&self) -> Arc<std::sync::atomic::AtomicBool> {
+        Arc::clone(&self.alive)
+    }
 }
-impl Drop for Session { fn drop(&mut self) { let _ = self.tx_cmd.send(SessionCommand::CloseSession); } }
+impl Drop for Session {
+    fn drop(&mut self) {
+        let _ = self.tx_cmd.send(SessionCommand::CloseSession);
+    }
+}
 
 /// Signal that the session is shutting down. Drains all stream tx_evt
 /// senders so bridge threads wake up from rx.recv(). Returns the
 /// drained senders and events to deliver outside the lock.
-fn signal_shutdown(inner: &Arc<Mutex<SessionInner>>, alive: &Arc<std::sync::atomic::AtomicBool>, reason: ShutdownReason) {
+fn signal_shutdown(
+    inner: &Arc<Mutex<SessionInner>>,
+    alive: &Arc<std::sync::atomic::AtomicBool>,
+    reason: ShutdownReason,
+) {
     alive.store(false, std::sync::atomic::Ordering::Relaxed);
     let mut g = inner.lock().unwrap();
     g.closing = true;
@@ -682,7 +884,10 @@ fn signal_shutdown(inner: &Arc<Mutex<SessionInner>>, alive: &Arc<std::sync::atom
         "session={} closing reason={} role={} uptime_ms={} streams_open={} packets_sent={} packets_recv={} bytes_sent={} bytes_recv={}",
         g.session_id.as_u64(),
         g.shutdown_reason.as_str(),
-        match g.role { Role::Client => "client", Role::Server => "server" },
+        match g.role {
+            Role::Client => "client",
+            Role::Server => "server",
+        },
         g.stats.session_uptime_ms,
         g.streams.len(),
         g.stats.packets_sent,
@@ -711,7 +916,11 @@ fn signal_shutdown(inner: &Arc<Mutex<SessionInner>>, alive: &Arc<std::sync::atom
     drop(drained);
 }
 
-fn recv_loop<C: Carrier>(carrier: Arc<C>, inner: Arc<Mutex<SessionInner>>, alive: Arc<std::sync::atomic::AtomicBool>) {
+fn recv_loop<C: Carrier>(
+    carrier: Arc<C>,
+    inner: Arc<Mutex<SessionInner>>,
+    alive: Arc<std::sync::atomic::AtomicBool>,
+) {
     // HIGH/LOW watermarks for the carrier-recv gate.
     //
     // **LOSS-TOLERANT, NOT ARTIFICIALLY LOSSLESS** (the regression fix):
@@ -731,18 +940,26 @@ fn recv_loop<C: Carrier>(carrier: Arc<C>, inner: Arc<Mutex<SessionInner>>, alive
     const PENDING_HIGH_WATERMARK: usize = 1024;
     const PENDING_LOW_WATERMARK: usize = 256;
     loop {
-        if !alive.load(std::sync::atomic::Ordering::Relaxed) { return; }
+        if !alive.load(std::sync::atomic::Ordering::Relaxed) {
+            return;
+        }
         // CRITICAL: drain pending events BEFORE reading from carrier.
         // If we don't, rx_evt can stay full → tx.send blocks in
         // handle_packet → we can't read from carrier → kernel TCP
         // recv buffer fills → peer's writer blocks → bilateral
         // deadlock → 30s write timeout → carrier EOF.
-        let pending_drained = { let mut g = inner.lock().unwrap(); try_deliver_pending(&mut g) };
-        let pending_len = { let g = inner.lock().unwrap(); g.pending_total };
+        let pending_drained = {
+            let mut g = inner.lock().unwrap();
+            try_deliver_pending(&mut g)
+        };
+        let pending_len = {
+            let g = inner.lock().unwrap();
+            g.pending_total
+        };
         let should_read = if pending_len >= PENDING_HIGH_WATERMARK {
-            false  // Gate CLOSED — TRULY stop reading
+            false // Gate CLOSED — TRULY stop reading
         } else if pending_len <= PENDING_LOW_WATERMARK {
-            true   // Gate OPEN — full read
+            true // Gate OPEN — full read
         } else {
             // Hysteresis: keep the current state to prevent oscillation.
             // If we just drained some events, the consumer is making
@@ -757,23 +974,32 @@ fn recv_loop<C: Carrier>(carrier: Arc<C>, inner: Arc<Mutex<SessionInner>>, alive
         let max_reads = if should_read { 1000 } else { 0 };
         let mut read_count = 0u32;
         loop {
-            if read_count >= max_reads { break; }
+            if read_count >= max_reads {
+                break;
+            }
             read_count += 1;
             match carrier.recv() {
-                Ok(Some((_, bytes))) => {
-                    match handle_packet(&inner, &bytes) {
-                        Ok(_) => {
-                            let now_len = { let g = inner.lock().unwrap(); g.pending_total };
-                            if now_len >= PENDING_HIGH_WATERMARK && should_read { break; }
-                            continue;
+                Ok(Some((_, bytes))) => match handle_packet(&inner, &bytes) {
+                    Ok(_) => {
+                        let now_len = {
+                            let g = inner.lock().unwrap();
+                            g.pending_total
+                        };
+                        if now_len >= PENDING_HIGH_WATERMARK && should_read {
+                            break;
                         }
-                        Err(e) => { log::warn!("handle_packet: {e}"); continue; }
+                        continue;
                     }
-                }
+                    Err(e) => {
+                        log::warn!("handle_packet: {e}");
+                        continue;
+                    }
+                },
                 Ok(None) => break,
                 Err(e) => {
                     log::warn!("carrier recv fatal: {e}");
-                    signal_shutdown(&inner, &alive, ShutdownReason::CarrierRecvError); return;
+                    signal_shutdown(&inner, &alive, ShutdownReason::CarrierRecvError);
+                    return;
                 }
             }
         }
@@ -781,9 +1007,15 @@ fn recv_loop<C: Carrier>(carrier: Arc<C>, inner: Arc<Mutex<SessionInner>>, alive
         // Ping, ResetStream for a rejected open): wake the sender if it
         // has anything waiting in `outgoing`. A plain flag check under the
         // lock — no allocation, no per-packet cost.
-        let wake_sender = { let mut g = inner.lock().unwrap(); std::mem::take(&mut g.outgoing_added) };
+        let wake_sender = {
+            let mut g = inner.lock().unwrap();
+            std::mem::take(&mut g.outgoing_added)
+        };
         if wake_sender {
-            let waker = { let g = inner.lock().unwrap(); Arc::clone(&g.waker) };
+            let waker = {
+                let g = inner.lock().unwrap();
+                Arc::clone(&g.waker)
+            };
             waker.notify();
         }
         // Sleep strategy: when the carrier-recv gate is CLOSED (pending
@@ -827,36 +1059,57 @@ fn recv_loop<C: Carrier>(carrier: Arc<C>, inner: Arc<Mutex<SessionInner>>, alive
 /// backpressure (apps block on Stream::write, the recv thread keeps
 /// flowing) and the carrier's 30 s write timeout converts a dead peer
 /// into a session shutdown.
-fn sender_loop<C: Carrier>(carrier: Arc<C>, inner: Arc<Mutex<SessionInner>>, rx_cmd: mpsc::Receiver<SessionCommand>,
-                           alive: Arc<std::sync::atomic::AtomicBool>, waker: Arc<SendWaker>) {
+fn sender_loop<C: Carrier>(
+    carrier: Arc<C>,
+    inner: Arc<Mutex<SessionInner>>,
+    rx_cmd: mpsc::Receiver<SessionCommand>,
+    alive: Arc<std::sync::atomic::AtomicBool>,
+    waker: Arc<SendWaker>,
+) {
     let carrier_mtu = carrier.mtu();
-    let mode = { let g = inner.lock().unwrap(); g.config.mode };
+    let mode = {
+        let g = inner.lock().unwrap();
+        g.config.mode
+    };
     loop {
-        if !alive.load(std::sync::atomic::Ordering::Relaxed) { return; }
+        if !alive.load(std::sync::atomic::Ordering::Relaxed) {
+            return;
+        }
         // ---- 1) Session-level commands. ----
         match rx_cmd.try_recv() {
-            Ok(SessionCommand::OpenStream { reply }) => { let _ = reply.send(handle_open_stream(&inner)); }
+            Ok(SessionCommand::OpenStream { reply }) => {
+                let _ = reply.send(handle_open_stream(&inner));
+            }
             Ok(SessionCommand::CloseSession) => {
                 pack_and_send_all(&carrier, &inner, &alive, carrier_mtu, mode);
-                { let mut g = inner.lock().unwrap();
-                    g.outgoing.push_back(Frame::ConnectionClose(ConnectionCloseFrame { code: 0, reason: "shutdown".into() })); }
+                {
+                    let mut g = inner.lock().unwrap();
+                    g.outgoing
+                        .push_back(Frame::ConnectionClose(ConnectionCloseFrame {
+                            code: 0,
+                            reason: "shutdown".into(),
+                        }));
+                }
                 pack_and_send_all(&carrier, &inner, &alive, carrier_mtu, mode);
                 // Grace period: the writes above have only reached the
                 // kernel buffer; give the carrier a moment before the
                 // session tears the socket down.
                 thread::sleep(Duration::from_millis(50));
-                signal_shutdown(&inner, &alive, ShutdownReason::ApplicationDrop); return;
+                signal_shutdown(&inner, &alive, ShutdownReason::ApplicationDrop);
+                return;
             }
             Err(mpsc::TryRecvError::Empty) => {}
             Err(mpsc::TryRecvError::Disconnected) => {
-                signal_shutdown(&inner, &alive, ShutdownReason::ApplicationDrop); return;
+                signal_shutdown(&inner, &alive, ShutdownReason::ApplicationDrop);
+                return;
             }
         }
         // ---- 2) Stream commands → send_buf / control frames. ----
         drain_stream_commands(&inner);
         // ---- 3) Keepalive: probes and dead-peer detection (v3: jittered). ----
         {
-            let mut g = inner.lock().unwrap(); let now = Instant::now();
+            let mut g = inner.lock().unwrap();
+            let now = Instant::now();
             let since_recv = now.duration_since(g.last_recv);
             if since_recv > PING_MIN && now >= g.next_ping_at {
                 let echo: u64 = rand::random();
@@ -864,7 +1117,9 @@ fn sender_loop<C: Carrier>(carrier: Arc<C>, inner: Arc<Mutex<SessionInner>>, rx_
                 // data in `outgoing` — a delayed probe would delay death
                 // detection by exactly the congestion duration.
                 g.outgoing.push_front(Frame::Ping(PingFrame { echo }));
-                g.last_ping_sent = now; g.stats.pings_sent += 1; g.pings_since_recv += 1;
+                g.last_ping_sent = now;
+                g.stats.pings_sent += 1;
+                g.pings_since_recv += 1;
                 g.next_ping_at = now + jittered_ping_interval();
             }
             // Dead peer: no packet of ANY kind for PONG_TIMEOUT while at
@@ -872,9 +1127,13 @@ fn sender_loop<C: Carrier>(carrier: Arc<C>, inner: Arc<Mutex<SessionInner>>, rx_
             // traffic (data, pong) refreshes last_recv and resets the
             // counter, so a busy one-way session is never falsely killed.
             if since_recv > PONG_TIMEOUT && g.pings_since_recv > 0 {
-                log::warn!("keepalive: dead peer (no traffic for {since_recv:?}, {} unanswered probe(s))", g.pings_since_recv);
+                log::warn!(
+                    "keepalive: dead peer (no traffic for {since_recv:?}, {} unanswered probe(s))",
+                    g.pings_since_recv
+                );
                 drop(g);
-                signal_shutdown(&inner, &alive, ShutdownReason::KeepaliveTimeout); return;
+                signal_shutdown(&inner, &alive, ShutdownReason::KeepaliveTimeout);
+                return;
             }
         }
         // ---- 4) Pack + write until nothing is left to send. ----
@@ -892,7 +1151,8 @@ fn sender_loop<C: Carrier>(carrier: Arc<C>, inner: Arc<Mutex<SessionInner>>, rx_
         // waker until new work arrives.
         if let Err(e) = carrier.idle_tick() {
             log::warn!("sender: carrier idle tick fatal: {e}");
-            signal_shutdown(&inner, &alive, ShutdownReason::CarrierSendError); return;
+            signal_shutdown(&inner, &alive, ShutdownReason::CarrierSendError);
+            return;
         }
         waker.wait(SEND_IDLE_TICK);
     }
@@ -902,9 +1162,13 @@ fn sender_loop<C: Carrier>(carrier: Arc<C>, inner: Arc<Mutex<SessionInner>>, rx_
 /// carrier write fails fatally. Returns how many packets were sent.
 /// Runs ONLY on the sender thread (single builder — `next_pn` and the
 /// outgoing queue have exactly one consumer here).
-fn pack_and_send_all<C: Carrier>(carrier: &Arc<C>, inner: &Arc<Mutex<SessionInner>>,
-                                 alive: &Arc<std::sync::atomic::AtomicBool>,
-                                 carrier_mtu: usize, mode: crate::config::TransportMode) -> usize {
+fn pack_and_send_all<C: Carrier>(
+    carrier: &Arc<C>,
+    inner: &Arc<Mutex<SessionInner>>,
+    alive: &Arc<std::sync::atomic::AtomicBool>,
+    carrier_mtu: usize,
+    mode: crate::config::TransportMode,
+) -> usize {
     let mut budget = MAX_PACKS_PER_WAKE;
     let mut sent = 0usize;
     while budget > 0 {
@@ -930,7 +1194,10 @@ fn pack_and_send_all<C: Carrier>(carrier: &Arc<C>, inner: &Arc<Mutex<SessionInne
                 }
             }
             Ok(None) => break,
-            Err(e) => { log::warn!("pack: {e}"); break; }
+            Err(e) => {
+                log::warn!("pack: {e}");
+                break;
+            }
         }
     }
     sent
@@ -946,36 +1213,55 @@ fn pack_and_send_all<C: Carrier>(carrier: &Arc<C>, inner: &Arc<Mutex<SessionInne
 /// MAX_OUTGOING_DEPTH (512) is deep headroom, not a throughput limiter.
 const MAX_OUTGOING_DEPTH: usize = 512;
 
-fn pack_one(inner: &Arc<Mutex<SessionInner>>, carrier_mtu: usize, mode: crate::config::TransportMode) -> Result<Option<Vec<u8>>, Error> {
+fn pack_one(
+    inner: &Arc<Mutex<SessionInner>>,
+    carrier_mtu: usize,
+    mode: crate::config::TransportMode,
+) -> Result<Option<Vec<u8>>, Error> {
     // Phase 1 (under lock): depth check + frame pops + body encode +
     // key/PN handoff. Phase 2 (lock released): AES-GCM encryption — up to
     // ~64 KiB of crypto must never stall the recv thread or app threads.
     let built = {
         let mut g = inner.lock().unwrap();
-        if g.outgoing.len() >= MAX_OUTGOING_DEPTH { return Ok(None); }
+        if g.outgoing.len() >= MAX_OUTGOING_DEPTH {
+            return Ok(None);
+        }
         build_body_locked(&mut g, carrier_mtu, mode)?
     };
     let Some(b) = built else { return Ok(None) };
     // Hard invariant: the packed body must never exceed the carrier's
     // payload capacity — an oversized packet is rejected by the peer's
     // carrier (len > MTU) and would kill the session.
-    debug_assert!(b.body.len() <= carrier_mtu.saturating_sub(HEADER_LEN + crate::config::AEAD_TAG_LEN),
-        "packed body {} exceeds carrier payload capacity", b.body.len());
+    debug_assert!(
+        b.body.len() <= carrier_mtu.saturating_sub(HEADER_LEN + crate::config::AEAD_TAG_LEN),
+        "packed body {} exceeds carrier payload capacity",
+        b.body.len()
+    );
     let header = PacketHeader::new(b.sid, b.pn, false);
     let aad = header.to_bytes();
     let ct = crypto::encrypt(&b.tk, b.pn, &b.body, &aad)?;
     let mut wire = Vec::with_capacity(HEADER_LEN + ct.len());
-    wire.extend_from_slice(&aad); wire.extend_from_slice(&ct);
+    wire.extend_from_slice(&aad);
+    wire.extend_from_slice(&ct);
     Ok(Some(wire))
 }
 
 /// What [`build_body_locked`] hands its caller: the encoded packet body
 /// plus everything needed to seal it (traffic key, session id, packet
 /// number). The caller encrypts WITHOUT holding the session lock.
-struct BuiltPacket { body: Vec<u8>, tk: crate::crypto::TrafficKey, sid: u64, pn: u64 }
+struct BuiltPacket {
+    body: Vec<u8>,
+    tk: crate::crypto::TrafficKey,
+    sid: u64,
+    pn: u64,
+}
 
 /// Pop frames and encode one packet BODY (see [`BuiltPacket`]).
-fn build_body_locked(g: &mut SessionInner, carrier_mtu: usize, mode: crate::config::TransportMode) -> Result<Option<BuiltPacket>, Error> {
+fn build_body_locked(
+    g: &mut SessionInner,
+    carrier_mtu: usize,
+    mode: crate::config::TransportMode,
+) -> Result<Option<BuiltPacket>, Error> {
     // `body` is the single source of truth for packet fill: every frame is
     // encoded into it exactly once, so body.len() always equals the sum of
     // encoded frame sizes (the old code measured via a separate body_est
@@ -989,9 +1275,13 @@ fn build_body_locked(g: &mut SessionInner, carrier_mtu: usize, mode: crate::conf
         let max_body = carrier_mtu.saturating_sub(HEADER_LEN + crate::config::AEAD_TAG_LEN);
         // Pop frames from outgoing. encoded_len() is pure arithmetic.
         loop {
-            if frames.len() >= max_frames { break; }
+            if frames.len() >= max_frames {
+                break;
+            }
             let Some(f) = g.outgoing.front() else { break };
-            if body.len() + f.encoded_len() > max_body { break; }
+            if body.len() + f.encoded_len() > max_body {
+                break;
+            }
             let f = g.outgoing.pop_front().unwrap();
             f.encode_into(&mut body);
             frames.push(f);
@@ -1012,20 +1302,30 @@ fn build_body_locked(g: &mut SessionInner, carrier_mtu: usize, mode: crate::conf
         'pull: while frames.len() < max_frames {
             let mut progressed = false;
             for (sid, ds) in g.streams.iter_mut() {
-                if frames.len() >= max_frames { break; }
+                if frames.len() >= max_frames {
+                    break;
+                }
                 // Recompute per stream: body.len() changes on every take in
                 // this loop. (Computing `available` once per round served
                 // MULTIPLE streams with a stale value — four 16KB chunks
                 // packed into one packet and blew past the carrier MTU.)
                 let available = max_body.saturating_sub(body.len() + 15).min(MAX_DATA_FRAME); // 15 = DATA frame overhead
-                if available == 0 { break 'pull; }
-                let Some(&(offset, _)) = ds.send_buf.front() else { continue };
+                if available == 0 {
+                    break 'pull;
+                }
+                let Some(&(offset, _)) = ds.send_buf.front() else {
+                    continue;
+                };
                 let dlen = ds.send_buf.front().unwrap().1.len();
                 if dlen <= available {
                     let (_, data) = ds.send_buf.pop_front().unwrap();
                     ds.send_buf_bytes -= dlen as u64;
                     total_sent_delta += dlen as u64;
-                    let f = Frame::Data(DataFrame { stream_id: sid.0, offset, payload: data });
+                    let f = Frame::Data(DataFrame {
+                        stream_id: sid.0,
+                        offset,
+                        payload: data,
+                    });
                     f.encode_into(&mut body);
                     frames.push(f);
                     progressed = true;
@@ -1041,64 +1341,105 @@ fn build_body_locked(g: &mut SessionInner, carrier_mtu: usize, mode: crate::conf
                     ds.send_buf_bytes += rest.len() as u64;
                     ds.send_buf.push_front((rest_offset, rest));
                     total_sent_delta += available as u64;
-                    let f = Frame::Data(DataFrame { stream_id: sid.0, offset, payload: first });
+                    let f = Frame::Data(DataFrame {
+                        stream_id: sid.0,
+                        offset,
+                        payload: first,
+                    });
                     f.encode_into(&mut body);
                     frames.push(f);
                     break 'pull; // body is now exactly full
                 }
             }
-            if !progressed { break; }
+            if !progressed {
+                break;
+            }
         }
         g.total_sent += total_sent_delta;
         // CloseStream emission: only after the stream's data is fully
         // packed, and only if the 15-byte frame still fits.
         for (sid, ds) in g.streams.iter_mut() {
-            if frames.len() >= max_frames { break; }
-            if body.len() + 15 > max_body { break; }
+            if frames.len() >= max_frames {
+                break;
+            }
+            if body.len() + 15 > max_body {
+                break;
+            }
             if ds.fin_sent && !ds.close_stream_sent && ds.send_buf.is_empty() {
                 ds.close_stream_sent = true;
-                let f = Frame::CloseStream(CloseStreamFrame { stream_id: sid.0, final_offset: ds.next_offset });
+                let f = Frame::CloseStream(CloseStreamFrame {
+                    stream_id: sid.0,
+                    final_offset: ds.next_offset,
+                });
                 f.encode_into(&mut body);
                 frames.push(f);
             }
         }
-        if frames.is_empty() { return Ok(None); }
+        if frames.is_empty() {
+            return Ok(None);
+        }
         let dir = g.role.send_dir();
         Ok(Some(BuiltPacket {
             body,
             tk: g.keys.for_dir(dir).clone(),
             sid: g.session_id.as_u64(),
-            pn: { let pn = g.next_pn; g.next_pn += 1; pn },
+            pn: {
+                let pn = g.next_pn;
+                g.next_pn += 1;
+                pn
+            },
         }))
     }
 }
 
 fn handle_open_stream(inner: &Arc<Mutex<SessionInner>>) -> Result<Stream, Error> {
     let mut g = inner.lock().unwrap();
-    if g.closing { return Err(Error::Application("closed".into())); }
+    if g.closing {
+        return Err(Error::Application("closed".into()));
+    }
     // Enforce the stream cap for locally-opened streams too — handle_open_stream
     // previously grew `streams` without any bound (config field was never checked).
     if g.streams.len() >= g.config.max_streams_per_session as usize {
         return Err(Error::ResourceLimit(format!(
-            "max streams per session ({}) reached", g.config.max_streams_per_session)));
+            "max streams per session ({}) reached",
+            g.config.max_streams_per_session
+        )));
     }
-    let side = if g.role == Role::Client { 0 } else { 1u32 << 31 };
+    let side = if g.role == Role::Client {
+        0
+    } else {
+        1u32 << 31
+    };
     // Guard the stream-number space: `num` must never reach the role bit.
     const STREAM_NUM_LIMIT: u32 = 1 << 31;
     if g.next_stream_num >= STREAM_NUM_LIMIT - 1 {
         return Err(Error::ResourceLimit("stream number space exhausted".into()));
     }
-    let num = g.next_stream_num; g.next_stream_num += 1;
+    let num = g.next_stream_num;
+    g.next_stream_num += 1;
     let sid = StreamId(side | num);
     let (tx_cmd, rx_cmd) = mpsc::sync_channel(64);
     let (tx_evt, rx_evt) = mpsc::sync_channel(16);
     let rx_evt_depth = Arc::new(AtomicU64::new(0));
-    g.streams.insert(sid, DriverStream {
-        tx_evt, rx_cmd, send_buf: VecDeque::new(), send_buf_bytes: 0, next_offset: 0,
-        fin_sent: false, close_stream_sent: false, fin_recv: false, sid_log: sid, data_bytes_dispatched: 0,
-        rx_evt_depth: Arc::clone(&rx_evt_depth), recv_next_offset: 0,
-    });
-    g.outgoing.push_back(Frame::OpenStream(OpenStreamFrame { stream_id: sid.0 }));
+    g.streams.insert(
+        sid,
+        DriverStream {
+            tx_evt,
+            rx_cmd,
+            send_buf: VecDeque::new(),
+            send_buf_bytes: 0,
+            next_offset: 0,
+            fin_sent: false,
+            close_stream_sent: false,
+            fin_recv: false,
+            sid_log: sid,
+            data_bytes_dispatched: 0,
+            rx_evt_depth: Arc::clone(&rx_evt_depth),
+            recv_next_offset: 0,
+        },
+    );
+    g.outgoing
+        .push_back(Frame::OpenStream(OpenStreamFrame { stream_id: sid.0 }));
     let waker = Arc::clone(&g.waker);
     Ok(Stream::new(sid, tx_cmd, rx_evt, rx_evt_depth, waker))
 }
@@ -1118,7 +1459,9 @@ fn drain_stream_commands(inner: &Arc<Mutex<SessionInner>>) {
         let g = inner.lock().unwrap();
         for (sid, ds) in g.streams.iter() {
             loop {
-                if ds.send_buf_bytes >= g.config.windows.stream_send_window { break; }
+                if ds.send_buf_bytes >= g.config.windows.stream_send_window {
+                    break;
+                }
                 match ds.rx_cmd.try_recv() {
                     Ok(c) => all_cmds.push((*sid, c)),
                     Err(mpsc::TryRecvError::Empty) => break,
@@ -1130,21 +1473,30 @@ fn drain_stream_commands(inner: &Arc<Mutex<SessionInner>>) {
             }
         }
     }
-    if all_cmds.is_empty() && handle_dropped.is_empty() { return; }
+    if all_cmds.is_empty() && handle_dropped.is_empty() {
+        return;
+    }
     let mut g = inner.lock().unwrap();
     for sid in handle_dropped {
         if let Some(ds) = g.streams.get_mut(&sid) {
             if !ds.fin_sent {
                 ds.fin_sent = true;
-                log::debug!("fin_sent set sid={sid:?} (Stream handle dropped, rx_cmd disconnected)");
+                log::debug!(
+                    "fin_sent set sid={sid:?} (Stream handle dropped, rx_cmd disconnected)"
+                );
             }
         }
     }
     for (sid, cmd) in all_cmds {
-        let Some(ds) = g.streams.get_mut(&sid) else { continue };
+        let Some(ds) = g.streams.get_mut(&sid) else {
+            continue;
+        };
         match cmd {
             StreamCommand::Write(data) => {
-                let off = ds.next_offset; ds.next_offset += data.len() as u64; ds.send_buf_bytes += data.len() as u64; ds.send_buf.push_back((off, data));
+                let off = ds.next_offset;
+                ds.next_offset += data.len() as u64;
+                ds.send_buf_bytes += data.len() as u64;
+                ds.send_buf.push_back((off, data));
             }
             StreamCommand::Close => {
                 ds.fin_sent = true;
@@ -1152,13 +1504,27 @@ fn drain_stream_commands(inner: &Arc<Mutex<SessionInner>>) {
             }
             StreamCommand::Reset(code) => {
                 let fo = ds.next_offset;
-                g.outgoing.push_back(Frame::ResetStream(ResetStreamFrame { stream_id: sid.0, code, final_offset: fo }));
+                g.outgoing.push_back(Frame::ResetStream(ResetStreamFrame {
+                    stream_id: sid.0,
+                    code,
+                    final_offset: fo,
+                }));
             }
             StreamCommand::OpenTcp(atyp, addr, port) => {
-                g.outgoing.push_back(Frame::OpenTcp(OpenTcpFrame { stream_id: sid.0, atyp, addr, port }));
+                g.outgoing.push_back(Frame::OpenTcp(OpenTcpFrame {
+                    stream_id: sid.0,
+                    atyp,
+                    addr,
+                    port,
+                }));
             }
             StreamCommand::SendOpenTcpResponse(status, reason) => {
-                g.outgoing.push_back(Frame::OpenTcpResponse(OpenTcpResponseFrame { stream_id: sid.0, status, reason }));
+                g.outgoing
+                    .push_back(Frame::OpenTcpResponse(OpenTcpResponseFrame {
+                        stream_id: sid.0,
+                        status,
+                        reason,
+                    }));
             }
             StreamCommand::Drop => {
                 // The application dropped its last Stream handle without an
@@ -1184,9 +1550,14 @@ fn drain_stream_commands(inner: &Arc<Mutex<SessionInner>>) {
     // BEFORE the CloseStream frame was actually emitted, causing the
     // peer to never see PeerFin — leading to a hung SOCKS5 client and
     // the user-visible "carrier EOF" symptom on the next iteration.
-    let dead: Vec<StreamId> = g.streams.iter()
-        .filter(|(_, ds)| ds.fin_sent && ds.fin_recv && ds.close_stream_sent && ds.send_buf.is_empty())
-        .map(|(sid, _)| *sid).collect();
+    let dead: Vec<StreamId> = g
+        .streams
+        .iter()
+        .filter(|(_, ds)| {
+            ds.fin_sent && ds.fin_recv && ds.close_stream_sent && ds.send_buf.is_empty()
+        })
+        .map(|(sid, _)| *sid)
+        .collect();
     for sid in &dead {
         g.streams.remove(sid);
         // Also drop any still-unclaimed channel halves for the same stream
@@ -1205,8 +1576,12 @@ fn handle_packet(inner: &Arc<Mutex<SessionInner>>, bytes: &[u8]) -> Result<bool,
     // writer thread and app threads while it completes.
     let tk = {
         let mut g = inner.lock().unwrap();
-        g.stats.packets_recv += 1; g.last_recv = Instant::now(); g.pings_since_recv = 0;
-        if g.session_id.as_u64() != header.session_id { return Err(Error::Auth("session_id mismatch".into())); }
+        g.stats.packets_recv += 1;
+        g.last_recv = Instant::now();
+        g.pings_since_recv = 0;
+        if g.session_id.as_u64() != header.session_id {
+            return Err(Error::Auth("session_id mismatch".into()));
+        }
         // Cheap pre-filter: reject replays BEFORE spending CPU on decrypt
         // (an attacker cannot burn decryption cycles with recorded traffic).
         if g.recv_replay.is_duplicate(pn) {
@@ -1264,7 +1639,9 @@ fn try_deliver_pending(g: &mut SessionInner) -> bool {
                 Ok(()) => {
                     delivered_any = true;
                     g.pending_total -= 1;
-                    if seq > 0 { check_order(g, sid, seq); }
+                    if seq > 0 {
+                        check_order(g, sid, seq);
+                    }
                 }
                 Err(mpsc::TrySendError::Full(evt)) => {
                     // Channel full — put the event back at the FRONT of
@@ -1290,25 +1667,47 @@ fn try_deliver_pending(g: &mut SessionInner) -> bool {
 /// if the stream already has events queued in its pending sub-queue, the
 /// new event MUST also go there (a later PeerFin must never overtake
 /// queued DATA). Recovers the event from TrySendError::Full — no clones.
-fn deliver_event(g: &mut SessionInner, sid: StreamId, tx: mpsc::SyncSender<StreamEvent>, evt: StreamEvent, all_delivered: &mut bool) {
+fn deliver_event(
+    g: &mut SessionInner,
+    sid: StreamId,
+    tx: mpsc::SyncSender<StreamEvent>,
+    evt: StreamEvent,
+    all_delivered: &mut bool,
+) {
     let seq = if matches!(evt, StreamEvent::Data(_)) {
-        let e = g.data_seq.entry(sid).or_insert(0); *e += 1; *e
-    } else { 0 };
-    let queued = g.pending_events.get_mut(&sid).map(|q| !q.is_empty()).unwrap_or(false);
+        let e = g.data_seq.entry(sid).or_insert(0);
+        *e += 1;
+        *e
+    } else {
+        0
+    };
+    let queued = g
+        .pending_events
+        .get_mut(&sid)
+        .map(|q| !q.is_empty())
+        .unwrap_or(false);
     if queued {
-        g.pending_events.get_mut(&sid).unwrap().push_back((tx, evt, seq));
+        g.pending_events
+            .get_mut(&sid)
+            .unwrap()
+            .push_back((tx, evt, seq));
         g.pending_total += 1;
         *all_delivered = false;
         return;
     }
     match tx.try_send(evt) {
         Ok(()) => {
-            if seq > 0 { check_order(g, sid, seq); }
+            if seq > 0 {
+                check_order(g, sid, seq);
+            }
         }
         Err(mpsc::TrySendError::Full(evt)) => {
             // Queue to the stream's pending sub-queue (UNBOUNDED — never
             // drop; backpressure comes from the carrier-recv gate).
-            g.pending_events.entry(sid).or_default().push_back((tx, evt, seq));
+            g.pending_events
+                .entry(sid)
+                .or_default()
+                .push_back((tx, evt, seq));
             g.pending_total += 1;
             *all_delivered = false;
         }
@@ -1326,7 +1725,10 @@ fn deliver_event(g: &mut SessionInner, sid: StreamId, tx: mpsc::SyncSender<Strea
 fn check_order(g: &mut SessionInner, sid: StreamId, seq: u64) {
     let last = g.last_data_delivered.entry(sid).or_insert(0);
     if seq <= *last {
-        log::error!("DELIVERY ORDER VIOLATION: sid={sid:?} delivered seq={seq} but last={}", *last);
+        log::error!(
+            "DELIVERY ORDER VIOLATION: sid={sid:?} delivered seq={seq} but last={}",
+            *last
+        );
     }
     *last = seq;
 }
@@ -1335,7 +1737,11 @@ fn check_order(g: &mut SessionInner, sid: StreamId, seq: u64) {
 /// immediately via `deliver_event` (try_send never blocks, so this is
 /// deadlock-free under the lock). Applies receive-side integrity checks:
 /// stream caps, role-bit sanity, and DATA offset validation.
-fn dispatch_frame(g: &mut SessionInner, frame: Frame, all_delivered: &mut bool) -> Result<(), Error> {
+fn dispatch_frame(
+    g: &mut SessionInner,
+    frame: Frame,
+    all_delivered: &mut bool,
+) -> Result<(), Error> {
     match frame {
         Frame::Data(d) => {
             let sid = StreamId(d.stream_id);
@@ -1348,58 +1754,95 @@ fn dispatch_frame(g: &mut SessionInner, frame: Frame, all_delivered: &mut bool) 
                     // On an ordered carrier, any offset deviation is a
                     // duplicate/replay or an injection — never deliver it.
                     if d.offset < ds.recv_next_offset {
-                        log::debug!("DATA duplicate/replay sid={sid:?} offset={} expected={}",
-                            d.offset, ds.recv_next_offset);
+                        log::debug!(
+                            "DATA duplicate/replay sid={sid:?} offset={} expected={}",
+                            d.offset,
+                            ds.recv_next_offset
+                        );
                     } else {
-                        log::warn!("DATA offset gap sid={sid:?} offset={} expected={} — frame dropped",
-                            d.offset, ds.recv_next_offset);
+                        log::warn!(
+                            "DATA offset gap sid={sid:?} offset={} expected={} — frame dropped",
+                            d.offset,
+                            ds.recv_next_offset
+                        );
                     }
                 } else {
                     ds.recv_next_offset += d.payload.len() as u64;
                     g.total_recv += d.payload.len() as u64;
-                    ds.rx_evt_depth.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    ds.rx_evt_depth
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     ds.data_bytes_dispatched += d.payload.len() as u64;
                     let tx = ds.tx_evt.clone();
                     deliver_event(g, sid, tx, StreamEvent::Data(d.payload), all_delivered);
                 }
-            } else { log::debug!("DATA on unknown stream {sid:?}"); }
+            } else {
+                log::debug!("DATA on unknown stream {sid:?}");
+            }
         }
         Frame::OpenStream(o) => {
             let sid = StreamId(o.stream_id);
             // Role-bit sanity: peer-opened streams must carry the PEER's role bit
             // (client opens 0x0…, server opens 0x8000_0000…). Prevents a malformed
             // or hostile peer from colliding with our own stream IDs.
-            let peer_bit = match g.role { Role::Server => 0u32, Role::Client => 1u32 << 31 };
+            let peer_bit = match g.role {
+                Role::Server => 0u32,
+                Role::Client => 1u32 << 31,
+            };
             if (sid.0 >> 31) != (peer_bit >> 31) {
                 log::warn!("OPEN_STREAM with wrong role bit sid={sid:?} — ignoring");
             } else if g.streams.contains_key(&sid) {
                 // Duplicate open — ignore (stream already exists).
-            } else if g.streams.len() + g.unclaimed.len() >= g.config.max_streams_per_session as usize {
+            } else if g.streams.len() + g.unclaimed.len()
+                >= g.config.max_streams_per_session as usize
+            {
                 // Enforce the (previously never checked) per-session stream cap.
-                log::warn!("OPEN_STREAM rejected: max_streams_per_session ({}) reached", g.config.max_streams_per_session);
-                g.outgoing.push_back(Frame::ResetStream(ResetStreamFrame { stream_id: sid.0, code: 1, final_offset: 0 }));
+                log::warn!(
+                    "OPEN_STREAM rejected: max_streams_per_session ({}) reached",
+                    g.config.max_streams_per_session
+                );
+                g.outgoing.push_back(Frame::ResetStream(ResetStreamFrame {
+                    stream_id: sid.0,
+                    code: 1,
+                    final_offset: 0,
+                }));
                 g.outgoing_added = true;
             } else {
                 let (tx_cmd, rx_cmd) = mpsc::sync_channel(64);
                 let (tx_evt, rx_evt) = mpsc::sync_channel(16);
                 let rx_evt_depth = Arc::new(AtomicU64::new(0));
-                g.streams.insert(sid, DriverStream {
-                    tx_evt, rx_cmd, send_buf: VecDeque::new(), send_buf_bytes: 0, next_offset: 0,
-                    fin_sent: false, close_stream_sent: false, fin_recv: false, sid_log: sid, data_bytes_dispatched: 0,
-                    rx_evt_depth: Arc::clone(&rx_evt_depth), recv_next_offset: 0,
-                });
+                g.streams.insert(
+                    sid,
+                    DriverStream {
+                        tx_evt,
+                        rx_cmd,
+                        send_buf: VecDeque::new(),
+                        send_buf_bytes: 0,
+                        next_offset: 0,
+                        fin_sent: false,
+                        close_stream_sent: false,
+                        fin_recv: false,
+                        sid_log: sid,
+                        data_bytes_dispatched: 0,
+                        rx_evt_depth: Arc::clone(&rx_evt_depth),
+                        recv_next_offset: 0,
+                    },
+                );
                 g.unclaimed.insert(sid, (tx_cmd, rx_evt, rx_evt_depth));
                 g.stats.streams_total += 1;
             }
         }
-        Frame::CloseStream(c) => { let sid = StreamId(c.stream_id);
+        Frame::CloseStream(c) => {
+            let sid = StreamId(c.stream_id);
             if let Some(ds) = g.streams.get_mut(&sid) {
                 ds.fin_recv = true;
-                ds.rx_evt_depth.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                ds.rx_evt_depth
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let tx = ds.tx_evt.clone();
                 deliver_event(g, sid, tx, StreamEvent::PeerFin, all_delivered);
-            } }
-        Frame::ResetStream(r) => { let sid = StreamId(r.stream_id);
+            }
+        }
+        Frame::ResetStream(r) => {
+            let sid = StreamId(r.stream_id);
             if let Some(ds) = g.streams.get_mut(&sid) {
                 // A reset terminates the stream in BOTH directions: mark
                 // fin_recv so the dead-stream cleanup in
@@ -1412,23 +1855,36 @@ fn dispatch_frame(g: &mut SessionInner, frame: Frame, all_delivered: &mut bool) 
                 ds.fin_recv = true;
                 ds.send_buf.clear();
                 ds.send_buf_bytes = 0;
-                ds.rx_evt_depth.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                ds.rx_evt_depth
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let tx = ds.tx_evt.clone();
                 deliver_event(g, sid, tx, StreamEvent::PeerReset(r.code), all_delivered);
-            } }
-        Frame::OpenTcp(o) => { let sid = StreamId(o.stream_id);
-            if g.streams.contains_key(&sid) { let _ = g.open_tcp_tx.send((sid, o)); } }
-        Frame::OpenTcpResponse(r) => { let sid = StreamId(r.stream_id);
+            }
+        }
+        Frame::OpenTcp(o) => {
+            let sid = StreamId(o.stream_id);
+            if g.streams.contains_key(&sid) {
+                let _ = g.open_tcp_tx.send((sid, o));
+            }
+        }
+        Frame::OpenTcpResponse(r) => {
+            let sid = StreamId(r.stream_id);
             if let Some(ds) = g.streams.get_mut(&sid) {
-                ds.rx_evt_depth.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                ds.rx_evt_depth
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let tx = ds.tx_evt.clone();
                 deliver_event(g, sid, tx, StreamEvent::OpenTcpResponse(r), all_delivered);
-            } }
+            }
+        }
         Frame::Ping(p) => {
-            g.outgoing.push_front(Frame::Pong(PongFrame { echo: p.echo }));
+            g.outgoing
+                .push_front(Frame::Pong(PongFrame { echo: p.echo }));
             g.outgoing_added = true;
         }
-        Frame::Pong(_) => { g.last_pong = Instant::now(); g.stats.pongs_recv += 1; }
+        Frame::Pong(_) => {
+            g.last_pong = Instant::now();
+            g.stats.pongs_recv += 1;
+        }
         Frame::ConnectionClose(_) => {
             g.closing = true;
             if g.shutdown_reason == ShutdownReason::None {
@@ -1437,10 +1893,16 @@ fn dispatch_frame(g: &mut SessionInner, frame: Frame, all_delivered: &mut bool) 
             // SessionClosed is sent to ALL streams. Use stream_id 0
             // as a placeholder — these events don't need per-stream
             // ordering (the session is shutting down anyway).
-            let stream_dels: Vec<(StreamId, mpsc::SyncSender<StreamEvent>)> =
-                g.streams.iter().map(|(sid, ds)| (*sid, ds.tx_evt.clone())).collect();
+            let stream_dels: Vec<(StreamId, mpsc::SyncSender<StreamEvent>)> = g
+                .streams
+                .iter()
+                .map(|(sid, ds)| (*sid, ds.tx_evt.clone()))
+                .collect();
             for (sid, tx) in stream_dels {
-                g.streams.get(&sid).map(|ds| ds.rx_evt_depth.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
+                g.streams.get(&sid).map(|ds| {
+                    ds.rx_evt_depth
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                });
                 deliver_event(g, sid, tx, StreamEvent::SessionClosed, all_delivered);
             }
         }
@@ -1459,7 +1921,10 @@ pub fn build_first_packet(psk: &[u8; 32]) -> Result<(SessionId, Vec<u8>), Error>
     let header = PacketHeader::new(sid.as_u64(), 1, false);
     let aad = header.to_bytes();
     let mut body = Vec::new();
-    Frame::Ping(PingFrame { echo: rand::random() }).encode_into(&mut body);
+    Frame::Ping(PingFrame {
+        echo: rand::random(),
+    })
+    .encode_into(&mut body);
     let ct = crypto::encrypt(&keys.c2s, 1, &body, &aad)?;
     let mut wire = Vec::with_capacity(HEADER_LEN + ct.len());
     wire.extend_from_slice(&aad);
@@ -1476,7 +1941,12 @@ pub fn verify_psk(first_packet: &[u8], psk: [u8; 32]) -> Result<SessionId, Error
     let session_id = SessionId::from_u64(header.session_id);
     let keys = crypto::derive_keys(session_id.as_bytes(), &psk);
     let aad = &first_packet[..HEADER_LEN];
-    match crypto::decrypt(&keys.c2s, header.packet_number, &first_packet[HEADER_LEN..], aad) {
+    match crypto::decrypt(
+        &keys.c2s,
+        header.packet_number,
+        &first_packet[HEADER_LEN..],
+        aad,
+    ) {
         Ok(_) => Ok(session_id),
         Err(_) => Err(Error::Auth("RawLink authentication failed".into())),
     }

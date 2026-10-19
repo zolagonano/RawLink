@@ -44,29 +44,45 @@ struct TestCarrier {
 impl TestCarrier {
     fn pair(duplicate_every: bool) -> (TestCarrier, TestCarrier) {
         let shared = Arc::new(Mutex::new(Shared::default()));
-        (TestCarrier { shared: Arc::clone(&shared), is_a: true, duplicate_every },
-         TestCarrier { shared, is_a: false, duplicate_every })
+        (
+            TestCarrier {
+                shared: Arc::clone(&shared),
+                is_a: true,
+                duplicate_every,
+            },
+            TestCarrier {
+                shared,
+                is_a: false,
+                duplicate_every,
+            },
+        )
     }
 }
 
 impl Carrier for TestCarrier {
     type Address = TestAddr;
     fn send(&self, _dst: TestAddr, pkt: &[u8]) -> Result<(), Error> {
-        
         let mut g = self.shared.lock().unwrap();
         let q = if self.is_a { &mut g.in_b } else { &mut g.in_a };
         q.push_back(pkt.to_vec());
-        if self.duplicate_every { q.push_back(pkt.to_vec()); }
+        if self.duplicate_every {
+            q.push_back(pkt.to_vec());
+        }
         Ok(())
     }
     fn recv(&self) -> Result<Option<(TestAddr, Vec<u8>)>, Error> {
         let mut g = self.shared.lock().unwrap();
-        
+
         let q = if self.is_a { &mut g.in_a } else { &mut g.in_b };
-        Ok(q.pop_front().map(|b| (TestAddr(if self.is_a { 1 } else { 0 }), b)))
+        Ok(q.pop_front()
+            .map(|b| (TestAddr(if self.is_a { 1 } else { 0 }), b)))
     }
-    fn mtu(&self) -> usize { 65535 }
-    fn local_addr(&self) -> TestAddr { TestAddr(if self.is_a { 0 } else { 1 }) }
+    fn mtu(&self) -> usize {
+        65535
+    }
+    fn local_addr(&self) -> TestAddr {
+        TestAddr(if self.is_a { 0 } else { 1 })
+    }
 }
 
 const PSK: [u8; 32] = [0x42u8; 32];
@@ -74,8 +90,10 @@ const PSK: [u8; 32] = [0x42u8; 32];
 static LOG_INIT: std::sync::Once = std::sync::Once::new();
 fn init_log() {
     LOG_INIT.call_once(|| {
-        let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("debug"))
-            .format_timestamp_millis().try_init();
+        let _ =
+            env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("debug"))
+                .format_timestamp_millis()
+                .try_init();
     });
 }
 
@@ -95,8 +113,9 @@ fn craft_packet(sid_u64: u64, pn: u64, body: &[u8]) -> Vec<u8> {
 fn ping_body(range: std::ops::Range<u64>, base: u64) -> Vec<u8> {
     let mut body = Vec::new();
     for i in range {
-        body.extend_from_slice(&rawlink::frame::Frame::Ping(
-            rawlink::frame::PingFrame { echo: base + i }).encode());
+        body.extend_from_slice(
+            &rawlink::frame::Frame::Ping(rawlink::frame::PingFrame { echo: base + i }).encode(),
+        );
     }
     body
 }
@@ -104,7 +123,9 @@ fn ping_body(range: std::ops::Range<u64>, base: u64) -> Vec<u8> {
 fn wait_until<F: Fn() -> bool>(deadline_ms: u64, f: F) -> bool {
     let start = Instant::now();
     while start.elapsed().as_millis() < deadline_ms as u128 {
-        if f() { return true; }
+        if f() {
+            return true;
+        }
         thread::sleep(Duration::from_millis(10));
     }
     f()
@@ -118,11 +139,19 @@ fn server_reader(server: Arc<Session>, n_streams: usize, tx: mpsc::Sender<Vec<St
     for _ in 0..n_streams {
         let (stream, _otc) = match server.accept_open_tcp() {
             Ok(x) => x,
-            Err(e) => { eprintln!("server accept_open_tcp failed: {e}"); let _ = tx.send(received); return; }
+            Err(e) => {
+                eprintln!("server accept_open_tcp failed: {e}");
+                let _ = tx.send(received);
+                return;
+            }
         };
         match stream.read() {
             Ok(b) if !b.is_empty() => received.push(String::from_utf8_lossy(&b).into_owned()),
-            other => { eprintln!("server stream read unexpected: {other:?}"); let _ = tx.send(received); return; }
+            other => {
+                eprintln!("server stream read unexpected: {other:?}");
+                let _ = tx.send(received);
+                return;
+            }
         }
     }
     let _ = tx.send(received);
@@ -152,10 +181,14 @@ fn duplicates_and_replays_do_not_corrupt_or_kill_session() {
     s2.open_tcp(1, vec![127, 0, 0, 1], 8081).unwrap();
     s2.write(b"payload-two").unwrap();
 
-    let got = rx.recv_timeout(Duration::from_secs(15))
+    let got = rx
+        .recv_timeout(Duration::from_secs(15))
         .expect("server reader did not finish in time");
-    assert_eq!(got, vec!["payload-one".to_string(), "payload-two".to_string()],
-        "duplicated packets corrupted the stream data or killed the accept loop");
+    assert_eq!(
+        got,
+        vec!["payload-one".to_string(), "payload-two".to_string()],
+        "duplicated packets corrupted the stream data or killed the accept loop"
+    );
     assert!(client.is_alive());
 }
 
@@ -168,7 +201,10 @@ fn replayed_authenticated_packet_is_processed_exactly_once() {
     let injector = ca.clone();
     let client = Arc::new(Session::connect_pre_shared(ca, PSK, Config::default()).unwrap());
     let sid_u64 = client.session_id();
-    let server = Arc::new(Session::accept_pre_shared(cb, SessionId::from_u64(sid_u64), PSK, Config::default()).unwrap());
+    let server = Arc::new(
+        Session::accept_pre_shared(cb, SessionId::from_u64(sid_u64), PSK, Config::default())
+            .unwrap(),
+    );
     thread::sleep(Duration::from_millis(50));
 
     // NOTE on packet numbers: the client session now sends an authenticated
@@ -182,22 +218,31 @@ fn replayed_authenticated_packet_is_processed_exactly_once() {
     let body = ping_body(0..100, 0xfeed_0000);
     let wire = craft_packet(sid_u64, 2, &body);
     injector.send(injector.local_addr(), &wire).unwrap();
-    assert!(wait_until(5000, || client.stats().pongs_recv >= 101),
-        "first delivery failed (pongs_recv={})", client.stats().pongs_recv);
+    assert!(
+        wait_until(5000, || client.stats().pongs_recv >= 101),
+        "first delivery failed (pongs_recv={})",
+        client.stats().pongs_recv
+    );
 
     // REPLAY the exact same authenticated bytes. The replay window must
     // reject it: the server must NOT answer with another 100 pongs.
     injector.send(injector.local_addr(), &wire).unwrap();
     thread::sleep(Duration::from_millis(400));
-    assert_eq!(client.stats().pongs_recv, 101,
-        "replayed packet was processed a second time — replay protection missing");
+    assert_eq!(
+        client.stats().pongs_recv,
+        101,
+        "replayed packet was processed a second time — replay protection missing"
+    );
 
     // A NEW packet (pn=3) must still flow: rejection isn't a session kill.
     let body2 = ping_body(0..100, 0xbeef_0000);
     let wire2 = craft_packet(sid_u64, 3, &body2);
     injector.send(injector.local_addr(), &wire2).unwrap();
-    assert!(wait_until(5000, || client.stats().pongs_recv == 201),
-        "session broken after replay rejection (pongs_recv={})", client.stats().pongs_recv);
+    assert!(
+        wait_until(5000, || client.stats().pongs_recv == 201),
+        "session broken after replay rejection (pongs_recv={})",
+        client.stats().pongs_recv
+    );
     assert!(server.is_alive() && client.is_alive());
 }
 
@@ -214,13 +259,22 @@ fn empty_write_does_not_look_like_fin() {
     thread::spawn(move || {
         let (stream, _otc) = match server.accept_open_tcp() {
             Ok(x) => x,
-            Err(e) => { eprintln!("accept failed: {e}"); let _ = tx.send("<accept-err>".into()); return; }
+            Err(e) => {
+                eprintln!("accept failed: {e}");
+                let _ = tx.send("<accept-err>".into());
+                return;
+            }
         };
         // First read must return the REAL payload — an empty DATA frame
         // previously read as PeerFin-equivalent and closed the bridge.
         match stream.read() {
-            Ok(b) => { let _ = tx.send(String::from_utf8_lossy(&b).into_owned()); }
-            Err(e) => { eprintln!("read err: {e}"); let _ = tx.send("<err>".into()); }
+            Ok(b) => {
+                let _ = tx.send(String::from_utf8_lossy(&b).into_owned());
+            }
+            Err(e) => {
+                eprintln!("read err: {e}");
+                let _ = tx.send("<err>".into());
+            }
         }
     });
 
@@ -230,15 +284,23 @@ fn empty_write_does_not_look_like_fin() {
     assert_eq!(n, 0, "empty write must be a no-op, not a sent frame");
     s.write(b"real-payload").unwrap();
 
-    let got = rx.recv_timeout(Duration::from_secs(10)).expect("server read timeout");
-    assert_eq!(got, "real-payload", "empty DATA frame was delivered and looked like FIN");
+    let got = rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("server read timeout");
+    assert_eq!(
+        got, "real-payload",
+        "empty DATA frame was delivered and looked like FIN"
+    );
 }
 
 #[test]
 fn max_streams_per_session_is_enforced() {
     init_log();
     let (ca, cb) = TestCarrier::pair(false);
-    let cfg = Config { max_streams_per_session: 2, ..Default::default() };
+    let cfg = Config {
+        max_streams_per_session: 2,
+        ..Default::default()
+    };
     let client = Session::connect_pre_shared(ca, PSK, cfg.clone()).unwrap();
     let sid = SessionId::from_u64(client.session_id());
     let _server = Session::accept_pre_shared(cb, sid, PSK, cfg).unwrap();
@@ -246,8 +308,14 @@ fn max_streams_per_session_is_enforced() {
     let s1 = client.open_stream().unwrap();
     let s2 = client.open_stream().unwrap();
     let _ = (s1, s2);
-    let err = client.open_stream().err().expect("third open_stream must fail");
-    assert!(matches!(err, Error::ResourceLimit(_)), "expected ResourceLimit, got {err:?}");
+    let err = client
+        .open_stream()
+        .err()
+        .expect("third open_stream must fail");
+    assert!(
+        matches!(err, Error::ResourceLimit(_)),
+        "expected ResourceLimit, got {err:?}"
+    );
     // The session must remain alive and usable after the rejection.
     assert!(client.is_alive());
 }
@@ -269,8 +337,11 @@ fn receiver_accepts_throughput_frame_counts_and_rejects_over_limit() {
     let sid_u64 = client.session_id();
     let wire = craft_packet(sid_u64, 2, &ping_body(0..100, 0xfeed_0000));
     injector.send(injector.local_addr(), &wire).unwrap();
-    assert!(wait_until(5000, || client.stats().pongs_recv >= 101),
-        "server rejected the 100-frame packet (pongs_recv={})", client.stats().pongs_recv);
+    assert!(
+        wait_until(5000, || client.stats().pongs_recv >= 101),
+        "server rejected the 100-frame packet (pongs_recv={})",
+        client.stats().pongs_recv
+    );
 
     // Over the protocol cap: 2000 ping frames must be REJECTED as a unit
     // (no pongs from that packet), and the session must stay alive.
@@ -278,8 +349,13 @@ fn receiver_accepts_throughput_frame_counts_and_rejects_over_limit() {
     injector.send(injector.local_addr(), &wire2).unwrap();
 
     thread::sleep(Duration::from_millis(300));
-    assert_eq!(client.stats().pongs_recv, 101,
-        "over-limit packet must be rejected as a whole");
-    assert!(server.is_alive() && client.is_alive(),
-        "session must survive an over-limit packet");
+    assert_eq!(
+        client.stats().pongs_recv,
+        101,
+        "over-limit packet must be rejected as a whole"
+    );
+    assert!(
+        server.is_alive() && client.is_alive(),
+        "session must survive an over-limit packet"
+    );
 }
