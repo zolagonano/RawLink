@@ -1,0 +1,51 @@
+[package]
+name = "rawlink"
+version = "0.1.0"
+edition = "2024"
+description = "RawLink: reliable encrypted transport with built-in SSH obfuscation"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[lib]
+name = "rawlink"
+path = "src/lib.rs"
+
+[[bin]]
+name = "rawlink"
+path = "src/bin/rawlink.rs"
+
+[features]
+default = ["std"]
+std = []
+
+[dependencies]
+rand = "0.9"
+aes-gcm = { version = "0.10", default-features = false, features = ["alloc", "aes"] }
+chacha20 = "0.9"
+cipher = "0.4"
+hkdf = "0.12"
+hmac = "0.12"
+sha2 = "0.10"
+subtle = "2"
+zeroize = { version = "1.9", features = ["zeroize_derive"] }
+log = "0.4"
+clap = { version = "4.6", features = ["derive"] }
+env_logger = "0.11"
+
+
+[dev-dependencies]
+quickcheck = "1.1"
+quickcheck_macros = "1.2"
+hex = "0.4.3"
+
+[profile.release]
+panic = "abort"
+overflow-checks = true
+opt-level = 3
+codegen-units = 1
+lto = "thin"
+strip = "symbols"
+
+[profile.dev]
+opt-level = 1
+overflow-checks = true
