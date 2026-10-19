@@ -88,7 +88,11 @@ target/release/rawlink client --server <server-ip>:6123 \
 
 ## Documentation
 
-**NOTE:** The protocol documentation and specifications are currently a work in progress.
+I've published a blog post on my personal blog explaining how the protocol and its implementation work, if you're interested:
+
+- [https://zola.ink/blog/posts/rawlink-building-a-vpn-protocol-from-scratch](https://zola.ink/blog/posts/rawlink-building-a-vpn-protocol-from-scratch)
+
+The specifications and more detailed documentation are still a work in progress.
 
 ## Status
 
