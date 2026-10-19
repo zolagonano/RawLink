@@ -1478,14 +1478,13 @@ fn drain_stream_commands(inner: &Arc<Mutex<SessionInner>>) {
     }
     let mut g = inner.lock().unwrap();
     for sid in handle_dropped {
-        if let Some(ds) = g.streams.get_mut(&sid) {
-            if !ds.fin_sent {
+        if let Some(ds) = g.streams.get_mut(&sid)
+            && !ds.fin_sent {
                 ds.fin_sent = true;
                 log::debug!(
                     "fin_sent set sid={sid:?} (Stream handle dropped, rx_cmd disconnected)"
                 );
             }
-        }
     }
     for (sid, cmd) in all_cmds {
         let Some(ds) = g.streams.get_mut(&sid) else {

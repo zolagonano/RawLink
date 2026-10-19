@@ -55,11 +55,10 @@ pub fn next_backoff(
     max: Duration,
     reset_after: Duration,
 ) -> Duration {
-    if let Some(l) = lived {
-        if l >= reset_after {
+    if let Some(l) = lived
+        && l >= reset_after {
             return min;
         }
-    }
     if current.is_zero() {
         min
     } else {

@@ -81,7 +81,7 @@ impl SimCarrier {
             LossPattern::None => false,
             LossPattern::EveryNth(n) => {
                 let n = *n as u64;
-                n > 0 && (idx + 1) % n == 0
+                n > 0 && (idx + 1).is_multiple_of(n)
             }
             LossPattern::PseudoRandom { seed, mask } => {
                 let mut h = *seed;

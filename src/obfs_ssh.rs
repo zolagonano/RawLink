@@ -549,8 +549,8 @@ pub fn client_handshake(
         .write_all(&newkeys_packet())
         .map_err(io_err("send newkeys"))?;
     let (read, mut write) = obfs::build_halves(stream, &inner_cfg(cfg), c2s, s2c, true)?;
-    if let Some(e) = early {
-        if e.len() >= crate::config::HEADER_LEN {
+    if let Some(e) = early
+        && e.len() >= crate::config::HEADER_LEN {
             write
                 .write_frame2(
                     &e[..crate::config::HEADER_LEN],
@@ -564,7 +564,6 @@ pub fn client_handshake(
                     ))
                 })?;
         }
-    }
     Ok((read, write))
 }
 
